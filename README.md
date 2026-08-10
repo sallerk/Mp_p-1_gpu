@@ -1,6 +1,6 @@
 # Mp_p-1_gpu 1.0
 
-GPU **P-1** factoring of Mersenne numbers `M_p = 2^p - 1`, with both stages.
+GPU **P-1** factoring of Mersenne numbers `M_p = 2^p - 1`, with both stages, and P+1 at currently stage 1 only.
 Windows / MSVC, no external dependencies — no GMP, no CUDA or OpenCL SDK.
 
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
