@@ -1,0 +1,42 @@
+# Build output
+build/
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# Machine-specific measurements. tune.txt and fft-verified.txt are produced by
+# --tune on YOUR GPU; committing them would hand the next person timings and
+# verification verdicts from different hardware, which is worse than having none.
+tune.txt
+fft-verified.txt
+Mp_p-1_gpu-tune-config.txt
+*.suspect
+
+# Run output
+results.txt
+*.save
+*.save.tmp
+*.log
+
+# Local job description: exponent, bounds, device. config.txt is committed as a
+# documented template, so keep local edits out with a copy named config.local.txt
+config.local.txt
+
+# Scratch logs from development
+run.txt
+tune-run.txt
+bench-*.txt
+g2.txt
+g3.txt
+
+# Generated at run time
+kernel-cache/
+proof/
+proof-tmp/
+
+# Local tooling config
+.claude/
+
+# Internal working notes - not published
+tasks/
