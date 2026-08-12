@@ -37,8 +37,10 @@ kernel-cache/
 proof/
 proof-tmp/
 
-# Local tooling config
+# Local tooling config. Also covers .claude/worktrees, which can hold whole
+# checkouts of this repo.
 .claude/
 
 # Internal working notes - not published
 tasks/
+LESSONS_LEARNED.md

@@ -1,0 +1,189 @@
+# ===========================================================================
+#  Mp_p-1_gpu configuration
+#
+#  One "key = value" per line; '#' starts a comment. Numbers may be written
+#  plainly (4000000), with separators (4_000_000), or with a K/M/G suffix (4M).
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+#  THE MERSENNE NUMBER.  M_p = 2^p - 1, p must be PRIME.
+#  M_p is never built in memory, so p may be as large as the GPU can hold an
+#  FFT for -- hundreds of millions is the intended range.
+# ---------------------------------------------------------------------------
+exponent = 825881
+
+
+# ---------------------------------------------------------------------------
+#  STAGE-1 BOUND.
+#  P-1 finds a factor q = 2kp+1 whenever k is B1-smooth, i.e. every prime power
+#  dividing k is at most B1. Cost is about 1.442 * B1 squarings.
+#
+#  "auto" picks the B1 that minimises expected total work, using Dickman's rho
+#  to weigh the chance of success against the cost. It needs factored_to below.
+#
+#  NOTE: this version implements stage 1 only. Stage-1-only optima are larger
+#  than what you would choose with a stage 2 following, because there is no
+#  second stage to catch a near miss. When stage 2 lands, "auto" will pick
+#  SMALLER values -- that is expected, not a regression.
+# ---------------------------------------------------------------------------
+b1 = auto
+
+
+# ---------------------------------------------------------------------------
+#  HOW FAR THE EXPONENT HAS ALREADY BEEN TRIAL FACTORED, in bits.
+#  Only used to choose "auto" bounds: a factor below this is already known not
+#  to exist, so the model does not pay for the chance of finding one.
+#  The true value for an exponent is on mersenne.org. "auto" guesses from the
+#  size of the exponent, which is a fallback, not a substitute.
+# ---------------------------------------------------------------------------
+factored_to = 76
+
+
+# ---------------------------------------------------------------------------
+#  HOW MUCH A FACTOR IS WORTH relative to a PRP "composite" result.
+#  1.0 = equally valuable. 2.0 = a factor is worth two PRP tests, which pushes
+#  "auto" towards larger bounds. Ignored when b1 is set explicitly.
+# ---------------------------------------------------------------------------
+bias = 1.0
+
+
+# ---------------------------------------------------------------------------
+#  FFT CONFIGURATION.
+#
+#  "auto" is the recommended setting and is what this ships with.
+#
+#  How auto works: the engine takes tune.txt's entries in measured-cost order
+#  and VERIFIES each one at your exponent before using it, falling through to
+#  untuned shapes if every tuned entry fails. The verdict is remembered in
+#  fft-verified.txt, so the check costs a few seconds once and nothing on later
+#  runs. That verification is not paranoia: a tune on this GPU once produced a
+#  tune.txt in which every entry computed WRONG results.
+#
+#  Recommended workflow for a new exponent:
+#     1. set `exponent` below
+#     2. Mp_p-1_gpu.exe --tune noconfig      (once; targets that exponent and
+#                                               prints a verified recommendation)
+#     3. Mp_p-1_gpu.exe                      (auto picks the best verified one)
+#
+#  Set an explicit spec (e.g. 1:512:8:256:202) only to override that choice.
+#  An explicit spec skips candidate selection but is still verified, unless
+#  verify_fft = 0.
+# ---------------------------------------------------------------------------
+fft = auto
+
+
+# ---------------------------------------------------------------------------
+#  GPU SELECTION.  "auto", or an index from --list-devices.
+# ---------------------------------------------------------------------------
+device = auto
+
+
+# ---------------------------------------------------------------------------
+#  OUTPUT AND PROGRESS.
+#    results_file      factors and no-factor results are appended here
+#    report_every      squarings between progress-line updates
+# ---------------------------------------------------------------------------
+results_file = results.txt
+report_every = 1000
+
+
+# ---------------------------------------------------------------------------
+#  CPU THREADS FOR PHASE 3 (the gcd).
+#  Stage 1 runs in three phases:
+#     [1/3] build the exponent   CPU, seconds
+#     [2/3] the squaring ladder  GPU, hours
+#     [3/3] gcd(x-1, M_p)        CPU, minutes -- the GPU is idle here
+#
+#  Phase 3 is the only part that uses several CPU cores. Its large
+#  multiplications are independent (8 per matrix compose, 4 per apply) and are
+#  spread over worker threads. The recursion itself is sequential, so expect a
+#  few times faster rather than N-times-faster.
+#
+#  "auto" uses every hardware thread. Set a number to leave cores free.
+# ---------------------------------------------------------------------------
+gcd_threads = 8
+
+checkpoint_seconds = 300
+
+
+# ---------------------------------------------------------------------------
+#  HOW HARD TO PUSH THE BOUNDS.
+#
+#  The expected-cost minimum this program optimises is very FLAT. Measured for
+#  M81679223 at TF76: moving from the exact minimum (B1=0.2M, B2=6M) to 4x/8x
+#  those bounds costs 2.6% more expected work and nearly DOUBLES the chance of a
+#  factor, 2.36% -> 4.39%. Total work is a couple of percent of a PRP test either
+#  way. Taking the exact argmin of a curve that flat is false precision: the
+#  model's own inputs are not accurate to 2.6%.
+#
+#  So the choice is made differently: find the cheapest expected cost, then take
+#  the HIGHEST-YIELD bounds within this fraction of it.
+#
+#    0.05  (default) accept up to 5% more expected cost for more factors
+#    0     strict argmin -- smallest bounds, lowest yield
+#    0.20  push considerably harder
+#
+#  This is a different knob from `bias`. `bias` says what a factor is worth;
+#  this says how much to trust a minimum the model cannot really resolve.
+# ---------------------------------------------------------------------------
+bounds_tolerance = 0.05
+
+
+# ---------------------------------------------------------------------------
+#  WHICH STAGES TO RUN.
+#
+#  Stage 1 finds a factor q = 2kp+1 when k is entirely B1-smooth. Stage 2 also
+#  finds it when k is B1-smooth APART FROM ONE prime in (B1, B2] -- which is by
+#  far the most common near-miss, so stage 2 roughly doubles the yield for
+#  comparable work.
+#
+#    auto   (default) let the bounds model decide. It may still decline stage 2:
+#           on a small exponent at bias 1 a PRP test is cheap enough that P-1
+#           barely pays for itself, and a second stage does not earn its place.
+#    both   always run stage 2, even where the model would not choose it.
+#    1      stage 1 only. B1 is then optimised on its own, which makes it LARGER
+#           than it would be with a stage 2 following -- with no second stage
+#           there is nothing else to catch a near-miss, so it pays to push B1
+#           harder.
+#
+#  `stages` counts stages, so 1 means stage 1 only and 2 means both. If you
+#  prefer a yes/no switch use `stage2 = yes | no | auto` instead; the two keys
+#  are separate precisely so that neither reads backwards.
+# ---------------------------------------------------------------------------
+stages = auto
+
+# B2, the stage-2 bound. 'auto' lets the model pick it alongside B1; expect
+# something like 30x B1. Ignored (and rejected as a contradiction) if stages = 1.
+b2 = auto
+
+# ---------------------------------------------------------------------------
+#  STAGE-2 PAIRING SHAPE.  Leave both on auto unless you are experimenting.
+#
+#  Stage 2 pairs primes so that one modular multiply covers two of them: with
+#  A_m = x^((m*D)^2) and T_j = x^(j^2), the single term A_m - T_j is divisible by
+#  both m*D-j and m*D+j. D sets the block size; the window w lets j run up to
+#  w*D/2, which gives each prime several candidate slots instead of exactly one
+#  and is what lifts the pairing rate from ~1.17 primes per multiply to ~1.6.
+#
+#  The cost is memory: the T_j table holds phi(D)*w/2 full residues on the GPU.
+#  'auto' measures free VRAM and picks the best shape that fits.
+# ---------------------------------------------------------------------------
+stage2_d = auto
+stage2_w = auto
+
+
+# ---------------------------------------------------------------------------
+#  HOLD THE WINDOW OPEN AT EXIT.
+#    auto    (default) hold only when launched by double-click, i.e. when the
+#            window would otherwise close and destroy the output. Running from
+#            an existing shell does not pause, so scripts are unaffected.
+#    always  always wait for Enter.
+#    never   never wait.
+#
+#  This applies to every exit path -- results, self-tests, --list-devices and
+#  errors alike. One exception: if config.txt itself fails to parse, the setting
+#  cannot be read, so "auto" behaviour is used (which still pauses on a
+#  double-click, the case that matters).
+# ---------------------------------------------------------------------------
+pause_on_exit = auto
