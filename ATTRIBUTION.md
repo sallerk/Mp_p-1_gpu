@@ -4,10 +4,10 @@ Mp_p-1_gpu is licensed under the **GNU General Public License, version 3**
 (see [LICENSE](LICENSE)), because it is a derivative work of a GPLv3 project.
 
 This applies to every release: the repository is organized as one subfolder per
-version (`1.0/`, `1.1/`, ...), and the file paths below are relative to each
-version's own `src/` — e.g. `Gpu.{h,cpp}` means `1.1/src/Gpu.{h,cpp}` in the
-current release. The provenance split (what is upstream vs. original) does not
-change between versions; only the code within each file does.
+version (`1.0/`, `1.1/`, `1.2/`, ...), and the file paths below are relative to
+each version's own `src/` — e.g. `Gpu.{h,cpp}` means `1.2/src/Gpu.{h,cpp}` in
+the current release. The provenance split (what is upstream vs. original) does
+not change between versions; only the code within each file does.
 
 ## Upstream
 

@@ -14,7 +14,7 @@ OpenCL SDK.
 
 ## Download
 
-Take `Mp_p-1_gpu-1.1-win64.zip` from the
+Take `Mp_p-1_gpu-1.2-win64.zip` from the
 [Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), unzip it
 anywhere, and run it. There is nothing to install:
 
@@ -120,7 +120,7 @@ when redirected to a file.
 
 ```json
 {"status":"F","exponent":81679223,"worktype":"P-1","b1":2000000,"b2":60000000,
- "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.0"},
+ "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.2"},
  "timestamp":"2026-07-28 17:29:54","user":"...","computer":"..."}
 ```
 
