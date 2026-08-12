@@ -8,16 +8,34 @@ Windows / MSVC, no external dependencies — no GMP, no CUDA or OpenCL SDK.
 
 ---
 
-## Install
+## Download
+
+Take `Mp_p-1_gpu-1.0-win64.zip` from the
+[Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), unzip it
+anywhere, and run it. There is nothing to install:
+
+- **no Visual Studio and no compiler** — the C runtime is linked statically
+- **no OpenCL SDK** — OpenCL is loaded from your GPU driver at run time
+- no CUDA, no GMP, no Python
+
+The only requirement is a GPU driver with OpenCL support, which the AMD, nVidia
+and Intel desktop drivers all install by default. 64-bit Windows; the binary
+targets the baseline instruction set, so any x64 CPU will run it.
+
+The executable is not code-signed, so the first launch will probably raise
+SmartScreen — *"Windows protected your PC"* → **More info** → **Run anyway**.
+If you would rather not run a stranger's binary, build it yourself; it takes
+about a minute.
+
+## Build from source (optional)
 
 1. Install Visual Studio 2019 or 2022 with the **Desktop development with C++**
    workload.
 2. Run `build.bat`. It produces `Mp_p-1_gpu.exe`.
 
-Nothing else is required. OpenCL is loaded at run time from your GPU driver, so
-there is no SDK to install. Python is optional — it regenerates
-`src/bundle.cpp` from the OpenCL sources, and the generated file is committed so
-the build works without it.
+Nothing else is required. Python is optional — it regenerates `src/bundle.cpp`
+from the OpenCL sources, and the generated file is committed so the build works
+without it.
 
 ## Quick start
 
@@ -155,6 +173,10 @@ against known factors of real Mersenne numbers.
 GPLv3 — see [LICENSE](LICENSE) and [ATTRIBUTION.md](ATTRIBUTION.md).
 The upstream copyright notices in `src/` are required by GPLv3 §5 and must not
 be removed.
+
+The corresponding source for a released binary is the tagged commit it was built
+from, in this repository — which satisfies GPLv3 §6. The zip carries `LICENSE`
+and `ATTRIBUTION.md` with it.
 
 ## Name
 

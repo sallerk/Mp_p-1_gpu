@@ -1,9 +1,11 @@
-# Build output
+# Build output. The binary ships as a GitHub release asset, not as a committed
+# file - so that a stale local build can never be pushed as if it were current.
 build/
 *.exe
 *.obj
 *.pdb
 *.ilk
+*.zip
 
 # Machine-specific measurements. tune.txt and fft-verified.txt are produced by
 # --tune on YOUR GPU; committing them would hand the next person timings and
