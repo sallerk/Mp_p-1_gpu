@@ -15,7 +15,7 @@
 // change that alters what a result MEANS, so a submitted result can be traced
 // to the code that produced it.
 inline constexpr const char* PROGRAM_NAME = "Mp_p-1_gpu";
-inline constexpr const char* PROGRAM_VERSION = "1.0";
+inline constexpr const char* PROGRAM_VERSION = "1.1";
 
 // What to do with the console window when the program exits.
 //   AUTO   hold only when launched by double-click, i.e. when closing would
@@ -90,8 +90,11 @@ struct Config {
   // results -- see the notes in Selftest.cpp.
   bool verifyFft = true;
 
-  // Reuse a completed smaller-B1 checkpoint instead of redoing stage 1 from
-  // scratch. Saves exactly oldB1/newB1 of the work.
+  // Reuse completed work instead of redoing it:
+  //   stage 1  a smaller completed B1 is raised to this one, saving exactly
+  //            oldB1/newB1 of the squarings;
+  //   stage 2  a smaller completed B2's accumulator seeds this run, which then
+  //            walks only (oldB2, newB2].
   bool extend = true;
 };
 

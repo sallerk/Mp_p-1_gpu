@@ -12,6 +12,7 @@
 #include "PM1.h"
 #include "Queue.h"
 #include "Stage2Plan.h"
+#include "Stage2Save.h"
 #include "TuneEntry.h"
 #include "clwrap.h"
 #include "Context.h"
@@ -789,5 +790,217 @@ int runStage2Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
   }
 
   printf("\nM6b: %d failed.\n\n", failures - before);
+  return failures == before ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// M6e -- B2 extension.
+//
+// The claim: walking (b2old, b2new] with the accumulator seeded from a completed
+// (b1, b2old] gives the same factoring power as walking (b1, b2new] in one go.
+// It is not the same NUMBER -- the two cover the same primes through different
+// slots, and each slot carries a harmless x^(j^2) unit -- so a res64 comparison
+// against a from-scratch run would be wrong to demand. Three things are checked
+// instead, each aimed at a different way this could be broken:
+//
+//   A. the seeded accumulator is EXACTLY the product of the two ranges'
+//      accumulators, against the same independent CPU reference M6b uses;
+//   B. a real factor of a real Mersenne number, whose missing prime lies in the
+//      gap, is found by the extension -- and is NOT found before it, so the
+//      test can fail;
+//   C. no stale, foreign or unfinished accumulator can be picked up as a seed.
+//
+// A and B use DIFFERENT pairing shapes for the two halves on purpose: nothing
+// requires them to agree, and this is where that is asserted.
+// ---------------------------------------------------------------------------
+int runB2ExtendTests(GpuCommon shared, Queue* q, const string& fftSpec) {
+  printf("M6e: B2 extension\n\n");
+  const int before = failures;
+
+  auto quiet = [](u64, u64) { return true; };
+
+  printf("  A. seeded accumulator == product of the two ranges   (GPU vs exact CPU)\n");
+  {
+    const u32 p = 859433;
+    const u64 b1 = 2000, mid = 3000, b2 = 5000;
+    Timer t;
+    const Stage2Plan lo = buildStage2Plan(b1, mid, 420, 1);
+    const Stage2Plan hi = buildStage2Plan(mid, b2, 210, 3);
+
+    FFTConfig fft = smallestFFT(p, fftSpec);
+    auto gpu = Gpu::make(q, p, shared, fft, {}, false);
+    const Words x = makeWords(p, 3);
+
+    const Words accLo = gpu->stage2(x, lo, 0, quiet);
+    const Words accExt = gpu->stage2(x, hi, 0, quiet, nullptr, false, nullptr, 0, {},
+                                     nullptr, &accLo);
+
+    const Nat want = mulModM(stage2Reference(p, 3, lo), stage2Reference(p, 3, hi), p);
+    const Nat have = mod(fromWords(accExt), mersenne(p));
+
+    const bool ok = (have == want) && !want.isZero();
+    check(ok, "extended accumulator equals acc(low) * acc(gap)");
+    printf("     %s  M%u  (%llu,%llu] D=420 w=1  then  (%llu,%llu] D=210 w=3  %s  (%s)\n",
+           ok ? "PASS" : "FAIL", p, (unsigned long long) b1, (unsigned long long) mid,
+           (unsigned long long) mid, (unsigned long long) b2,
+           ok ? "match" : ("MISMATCH got " + have.hex() + " want " + want.hex()).c_str(),
+           fmtDuration(t.at()).c_str());
+
+    // A seeded walk over an empty seed must reduce to the ordinary one, or the
+    // seeding path is not the same code path production uses.
+    const Words one = makeWords(p, 1);
+    const Words accSeeded1 = gpu->stage2(x, lo, 0, quiet, nullptr, false, nullptr, 0, {},
+                                         nullptr, &one);
+    const bool ok1 = (accSeeded1 == accLo);
+    check(ok1, "seeding with 1 reproduces the unseeded accumulator");
+    printf("     %s  seed = 1 gives the identical accumulator\n", ok1 ? "PASS" : "FAIL");
+  }
+
+  printf("\n  B. a real factor whose missing prime is in the gap   (M86255591)\n");
+  {
+    // From gpuowl's test-pm1/pm1.txt: q = 2kp+1 divides M86255591, and k is
+    // 1997-smooth apart from the single prime 30949. So stage 1 to B1=2000 plus
+    // stage 2 to B2=20000 must NOT find it, and extending to B2=40000 must.
+    const u32 p = 86255591;
+    const char* factor = "28428815677762982290409";
+    const u64 b1 = 2000, mid = 20000, b2 = 40000;
+
+    Nat qFactor;
+    check(fromDecimal(factor, qFactor), "parse expected factor");
+
+    Config cfg;
+    cfg.exponent = p;
+    cfg.fftSpec = fftSpec;
+    cfg.reportEvery = 0;
+    cfg.checkpoint = false;             // hermetic: leave no save files behind
+
+    FFTConfig fft = smallestFFT(p, fftSpec);
+    auto gpu = Gpu::make(q, p, shared, fft, {}, false);
+
+    Timer t1;
+    PM1Result r = runPM1Stage1(*gpu, cfg, b1, false, /*doGcd=*/false);
+    printf("     stage 1 to B1=%llu: %llu squarings (%s)\n",
+           (unsigned long long) b1, (unsigned long long) r.squarings,
+           fmtDuration(t1.at()).c_str());
+
+    auto divisible = [&](const Words& acc) {
+      return !qFactor.isZero() && mod(fromWords(acc), qFactor).isZero();
+    };
+
+    const Stage2Plan lo = buildStage2Plan(b1, mid, 210, 1);
+    const Stage2Plan hi = buildStage2Plan(mid, b2, 420, 3);
+
+    Timer t2;
+    const Words accLo = gpu->stage2(r.residue, lo, 0, quiet);
+    const bool foundEarly = divisible(accLo);
+    check(!foundEarly, "the factor is NOT reachable with B2=20000");
+    printf("     %s  (%llu,%llu] alone: q divides acc? %-3s (must be no, or the\n"
+           "           test proves nothing)  (%s)\n", foundEarly ? "FAIL" : "PASS",
+           (unsigned long long) b1, (unsigned long long) mid,
+           foundEarly ? "YES" : "no", fmtDuration(t2.at()).c_str());
+
+    Timer t3;
+    const Words accExt = gpu->stage2(r.residue, hi, 0, quiet, nullptr, false, nullptr, 0, {},
+                                     nullptr, &accLo);
+    const bool foundExt = divisible(accExt);
+    check(foundExt, "the extension to B2=40000 finds the factor");
+    printf("     %s  extended to (%llu,%llu]: q divides acc? %-3s  (%s)\n",
+           foundExt ? "PASS" : "FAIL", (unsigned long long) mid, (unsigned long long) b2,
+           foundExt ? "yes" : "NO", fmtDuration(t3.at()).c_str());
+
+    // Control: one walk over the whole range must find it too. If this failed
+    // while the extension passed, the extension would be finding it for the
+    // wrong reason.
+    Timer t4;
+    const Stage2Plan full = buildStage2Plan(b1, b2, 210, 1);
+    const Words accFull = gpu->stage2(r.residue, full, 0, quiet);
+    const bool foundFull = divisible(accFull);
+    check(foundFull, "a single walk over (b1, b2] finds the same factor");
+    printf("     %s  from scratch (%llu,%llu]: q divides acc? %-3s  (%s)\n",
+           foundFull ? "PASS" : "FAIL", (unsigned long long) b1, (unsigned long long) b2,
+           foundFull ? "yes" : "NO", fmtDuration(t4.at()).c_str());
+  }
+
+  printf("\n  C. only a matching, completed accumulator may be reused   (CPU)\n");
+  {
+    // Exponent 1 cannot collide with a real save file.
+    const u32 p = 1;
+    const u64 b1 = 100, b2 = 200;
+    const u64 xr = 0x0123456789abcdefull;
+    const string path = defaultStage2Path(p, b1, b2);
+
+    Stage2State st;
+    st.exponent = p;
+    st.b1 = b1;
+    st.b2 = b2;
+    st.d = 210;
+    st.w = 1;
+    st.complete = true;
+    st.xRes64 = xr;
+    st.acc = Words{1, 2, 3, 4};
+
+    string err;
+    check(saveStage2(path, st, err), "write a completed record");
+
+    struct Case { const char* what; u32 e; u64 b1; u64 xr; bool want; };
+    static const Case CASES[] = {
+      {"matching (exponent, B1, x)", 1, 100, 0x0123456789abcdefull, true },
+      {"different exponent",         2, 100, 0x0123456789abcdefull, false},
+      {"different B1",               1, 101, 0x0123456789abcdefull, false},
+      {"different stage-1 residue",  1, 100, 0xdeadbeefdeadbeefull, false},
+      {"unknown stage-1 residue",    1, 100, 0,                     false},
+    };
+    for (const Case& c : CASES) {
+      Stage2State got;
+      string e2;
+      const bool got_ok = loadCompletedStage2(path, c.e, c.b1, c.xr, got, e2);
+      const bool ok = (got_ok == c.want) && (!got_ok || got.acc == st.acc);
+      check(ok, string("seed acceptance: ") + c.what);
+      const string outcome = got_ok ? string("accepted") : "rejected (" + e2 + ")";
+      printf("     %s  %-28s -> %s\n", ok ? "PASS" : "FAIL", c.what, outcome.c_str());
+    }
+
+    // An UNFINISHED walk is a resume point, never a seed: its accumulator is
+    // missing every slot after the position it stopped at.
+    Stage2State partial = st;
+    partial.complete = false;
+    partial.m = 5;
+    check(saveStage2(path, partial, err), "overwrite with a partial record");
+    Stage2State got;
+    string e2;
+    const bool tookPartial = loadCompletedStage2(path, p, b1, xr, got, e2);
+    check(!tookPartial, "an unfinished accumulator is never used as a seed");
+    const string partialOut = tookPartial ? string("ACCEPTED") : "rejected (" + e2 + ")";
+    printf("     %s  %-28s -> %s\n", tookPartial ? "FAIL" : "PASS",
+           "unfinished walk", partialOut.c_str());
+
+    // fromB2 separates two walks that agree on every other field: one seeded
+    // from a completed lower range, one that covered the whole range itself.
+    Stage2State want2;
+    want2.exponent = p; want2.b1 = b1; want2.b2 = b2; want2.d = 210; want2.w = 1;
+    want2.xRes64 = xr; want2.fromB2 = 150;
+    const bool crossed = loadStage2(path, want2, got, e2);
+    check(!crossed, "a from-scratch checkpoint cannot resume an extension");
+    const string crossOut = crossed ? string("ACCEPTED") : "rejected (" + e2 + ")";
+    printf("     %s  %-28s -> %s\n", crossed ? "FAIL" : "PASS",
+           "fromB2 mismatch", crossOut.c_str());
+
+    // And the directory scan the driver relies on.
+    const string other = defaultStage2Path(p, b1, 500);
+    Stage2State st2 = st;
+    st2.b2 = 500;
+    saveStage2(other, st2, err);
+    const vector<u64> found = findStage2Saves(p, b1);
+    const bool listed = found.size() == 2 && found[0] == 500 && found[1] == 200;
+    check(listed, "findStage2Saves returns every B2, largest first");
+    printf("     %s  %-28s -> %zu found\n", listed ? "PASS" : "FAIL",
+           "directory scan", found.size());
+
+    std::error_code ec;
+    filesystem::remove(path, ec);
+    filesystem::remove(other, ec);
+  }
+
+  printf("\nM6e: %d failed.\n\n", failures - before);
   return failures == before ? 0 : 1;
 }

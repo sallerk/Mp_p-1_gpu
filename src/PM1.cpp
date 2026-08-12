@@ -688,140 +688,252 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
 // parameter of that name silently shadows, and the accumulator's res64 is
 // computed with it below.
 PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Residue,
-                             const Stage2Plan& plan, bool showProgress) {
+                             u64 b1, u64 b2, u32 d, u32 w, bool showProgress) {
   PM1Stage2Result res;
-  res.b1 = plan.b1;
-  res.b2 = plan.b2;
-  res.d = plan.d;
-  res.w = plan.w;
+  res.b1 = b1;
+  res.b2 = b2;
+  res.d = d;
+  res.w = w;
 
-  const u64 total = plan.nSlots + 2 * (plan.nBlocks() - 1);
+  // Binds every accumulator this run reads or writes to the stage-1 residue it
+  // belongs to. Cheap, and it makes an extension across a changed E impossible.
+  const u64 xRes64 = residue(stage1Residue);
 
-  printf("  [%s stage 2 GPU] %s\n", ph(4), plan.describe().c_str());
-  printf("  [%s stage 2 GPU] %llu primes in (%llu, %llu], %zu T-buffers\n", ph(4),
-         (unsigned long long) plan.nPrimes, (unsigned long long) plan.b1,
-         (unsigned long long) plan.b2, plan.jset.size());
-  fflush(stdout);
-
-  // ---- resume ------------------------------------------------------------
   const string savePath = cfg.checkpointFile.empty()
-      ? defaultStage2Path(cfg.exponent, plan.b1, plan.b2)
+      ? defaultStage2Path(cfg.exponent, b1, b2)
       : cfg.checkpointFile + ".s2";
 
-  Stage2State want;
-  want.exponent = cfg.exponent;
-  want.b1 = plan.b1;
-  want.b2 = plan.b2;
-  want.d = plan.d;
-  want.w = plan.w;
+  // ---- B2 extension -------------------------------------------------------
+  // A COMPLETED stage 2 for this (exponent, b1) at a smaller B2 is exactly the
+  // seed this run wants: the accumulator is a product over slots, so walking
+  // (thatB2, b2] on top of it yields the product for the whole of (b1, b2].
+  // The saving is exactly thatB2/b2 of the primes.
+  //
+  // The earlier run's pairing shape does NOT have to match this one's -- each
+  // range gets its own plan and the product does not care -- so (D, w) are read
+  // out for reporting rather than required to agree.
+  //
+  // Skipped when checkpoint_file is set: the search is over the default
+  // pm1_<e>_s2_<b1>_<b2>.save naming, and an override means the user is placing
+  // files deliberately.
+  u64 lo = b1;
+  Words seedAcc;
+  string supersededPath;
+  bool alreadyComplete = false;
 
-  Gpu::Stage2Pos resumePos;
-  bool haveResume = false;
-  if (cfg.checkpoint) {
-    Stage2State got;
-    string err;
-    if (loadStage2(savePath, want, got, err)) {
-      resumePos.m = got.m;
-      resumePos.jIdx = got.jIdx;
-      resumePos.done = got.done;
-      resumePos.acc = std::move(got.acc);
-      resumePos.a = std::move(got.a);
-      resumePos.s = std::move(got.s);
-      haveResume = true;
-      printf("  [%s stage 2 GPU] resuming from %s at %.2f%% (block %llu of %llu)\n",
-             ph(4), savePath.c_str(), total ? 100.0 * double(resumePos.done) / double(total) : 0.0,
-             (unsigned long long) (resumePos.m - plan.mFirst),
-             (unsigned long long) plan.nBlocks());
-    } else if (err != "no stage-2 checkpoint") {
-      printf("  [%s stage 2 GPU] ignoring checkpoint: %s\n", ph(4), err.c_str());
+  if (cfg.checkpoint && cfg.extend && cfg.checkpointFile.empty()) {
+    for (u64 cand : findStage2Saves(cfg.exponent, b1)) {
+      const string path = defaultStage2Path(cfg.exponent, b1, cand);
+      Stage2State got;
+      string err;
+      const bool usable = loadCompletedStage2(path, cfg.exponent, b1, xRes64, got, err);
+
+      if (cand > b2) {
+        // Covers more than was asked for. Using it would mean reporting a B2
+        // this run did not request, so it is left alone and merely mentioned.
+        if (usable) {
+          printf("  [%s stage 2 GPU] note: %s already covers B2=%llu -- raise b2 to reuse it\n",
+                 ph(4), path.c_str(), (unsigned long long) cand);
+        }
+        continue;
+      }
+      if (!usable) {
+        // A partial checkpoint for this run's own B2 is the normal
+        // interrupted-run case, handled by the resume path below; saying
+        // "ignoring" about it would be misleading.
+        if (cand != b2) {
+          printf("  [%s stage 2 GPU] not usable as a seed: %s (%s)\n", ph(4), path.c_str(), err.c_str());
+        }
+        continue;
+      }
+
+      if (cand == b2) {
+        alreadyComplete = true;
+        seedAcc = std::move(got.acc);
+        printf("  [%s stage 2 GPU] already complete in %s -- skipping to the gcd\n",
+               ph(4), path.c_str());
+      } else {
+        lo = cand;
+        seedAcc = std::move(got.acc);
+        supersededPath = path;
+        res.fromB2 = cand;
+      }
+      break;                              // findStage2Saves returns largest first
     }
   }
+  res.reusedComplete = alreadyComplete;
 
-  // ---- the walk ----------------------------------------------------------
-  Timer timer;
-  Timer report;
-  double lastAt = -1e9;
-  // Squarings already done before this run started must not count against this
-  // run's elapsed time, or the rate and ETA come out badly wrong on a resume.
-  const u64 doneAtStart = haveResume ? resumePos.done : 0;
-  bool stopped = false;
+  Words accWords;
 
-  auto progress = [&](u64 done, u64 tot) {
-    if (gInterrupted.load()) { stopped = true; return false; }
-    if (!showProgress || !tot) { return true; }
-    const double el = report.at();
-    const u64 didHere = done > doneAtStart ? done - doneAtStart : 0;
-    const double rate = el > 0 ? double(didHere) / el : 0;
-    const double eta = rate > 0 ? double(tot - done) / rate : 0;
-    if (stdoutIsTerminal()) {
-      printf("\r  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s   ",
-             ph(4), 100.0 * double(done) / double(tot),
-             (unsigned long long) done, (unsigned long long) tot,
-             rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
-      fflush(stdout);
-    } else if (el - lastAt >= 60.0 || done == tot) {
-      lastAt = el;
-      printf("  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s\n",
-             ph(4), 100.0 * double(done) / double(tot),
-             (unsigned long long) done, (unsigned long long) tot,
-             rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
-      fflush(stdout);
+  if (alreadyComplete) {
+    accWords = std::move(seedAcc);
+  } else {
+    const Stage2Plan plan = buildStage2Plan(lo, b2, d, w);
+    const u64 total = plan.nSlots + 2 * (plan.nBlocks() - 1);
+
+    if (res.fromB2) {
+      // No "vs from scratch" prime count here: getting one means building the
+      // full (b1, b2] plan, which sieves and greedily matches the entire range.
+      // That is seconds of work at realistic bounds, for a log line.
+      printf("  [%s stage 2 GPU] extending the completed B2=%llu result to B2=%llu"
+             " -- only (%llu, %llu] is left to walk\n", ph(4),
+             (unsigned long long) res.fromB2, (unsigned long long) b2,
+             (unsigned long long) res.fromB2, (unsigned long long) b2);
     }
-    return true;
-  };
+    printf("  [%s stage 2 GPU] %s\n", ph(4), plan.describe().c_str());
+    printf("  [%s stage 2 GPU] %llu primes in (%llu, %llu], %zu T-buffers\n", ph(4),
+           (unsigned long long) plan.nPrimes, (unsigned long long) plan.b1,
+           (unsigned long long) plan.b2, plan.jset.size());
+    fflush(stdout);
 
-  // Checkpoint on a multiply count rather than a timer, because the saver has
-  // to run at a slot boundary. Convert the configured interval using the rate
-  // measured in M6b, then clamp so it is neither constant I/O nor never.
-  u32 saveEvery = 0;
-  if (cfg.checkpoint && cfg.checkpointSeconds) {
-    const double usPerMul = 2500.0;
-    saveEvery = u32(std::clamp(double(cfg.checkpointSeconds) * 1e6 / usPerMul, 200.0, 200000.0));
-  }
+    // ---- resume ------------------------------------------------------------
+    Stage2State want;
+    want.exponent = cfg.exponent;
+    want.b1 = b1;
+    want.b2 = b2;
+    want.d = d;
+    want.w = w;
+    want.fromB2 = res.fromB2;
+    want.xRes64 = xRes64;
 
-  auto save = [&](const Gpu::Stage2Pos& p) {
-    Stage2State st = want;
-    st.m = p.m;
-    st.jIdx = p.jIdx;
-    st.done = p.done;
-    st.acc = p.acc;
-    st.a = p.a;
-    st.s = p.s;
-    string err;
-    if (!saveStage2(savePath, st, err)) {
-      printf("\n  WARNING: could not write stage-2 checkpoint: %s\n", err.c_str());
+    Gpu::Stage2Pos resumePos;
+    bool haveResume = false;
+    if (cfg.checkpoint) {
+      Stage2State got;
+      string err;
+      if (loadStage2(savePath, want, got, err)) {
+        resumePos.m = got.m;
+        resumePos.jIdx = got.jIdx;
+        resumePos.done = got.done;
+        resumePos.acc = std::move(got.acc);
+        resumePos.a = std::move(got.a);
+        resumePos.s = std::move(got.s);
+        haveResume = true;
+        printf("  [%s stage 2 GPU] resuming from %s at %.2f%% (block %llu of %llu)\n",
+               ph(4), savePath.c_str(), total ? 100.0 * double(resumePos.done) / double(total) : 0.0,
+               (unsigned long long) (resumePos.m - plan.mFirst),
+               (unsigned long long) plan.nBlocks());
+      } else if (err != "no stage-2 checkpoint") {
+        printf("  [%s stage 2 GPU] ignoring checkpoint: %s\n", ph(4), err.c_str());
+      }
     }
-  };
 
-  Gpu::Stage2Pos stoppedAt;
-  const Words accWords =
-      gpu.stage2(stage1Residue, plan, cfg.reportEvery ? cfg.reportEvery : 1000, progress,
-                 nullptr, false, haveResume ? &resumePos : nullptr,
-                 saveEvery, cfg.checkpoint ? save : std::function<void(const Gpu::Stage2Pos&)>{},
-                 &stoppedAt);
+    // ---- the walk ----------------------------------------------------------
+    Timer timer;
+    Timer report;
+    double lastAt = -1e9;
+    // Squarings already done before this run started must not count against this
+    // run's elapsed time, or the rate and ETA come out badly wrong on a resume.
+    const u64 doneAtStart = haveResume ? resumePos.done : 0;
+    bool stopped = false;
 
-  if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 110, ""); }
-  res.stage2Secs = timer.at();
-  res.muls = total;
+    auto progress = [&](u64 done, u64 tot) {
+      if (gInterrupted.load()) { stopped = true; return false; }
+      if (!showProgress || !tot) { return true; }
+      const double el = report.at();
+      const u64 didHere = done > doneAtStart ? done - doneAtStart : 0;
+      const double rate = el > 0 ? double(didHere) / el : 0;
+      const double eta = rate > 0 ? double(tot - done) / rate : 0;
+      if (stdoutIsTerminal()) {
+        printf("\r  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s   ",
+               ph(4), 100.0 * double(done) / double(tot),
+               (unsigned long long) done, (unsigned long long) tot,
+               rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
+        fflush(stdout);
+      } else if (el - lastAt >= 60.0 || done == tot) {
+        lastAt = el;
+        printf("  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s\n",
+               ph(4), 100.0 * double(done) / double(tot),
+               (unsigned long long) done, (unsigned long long) tot,
+               rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
+        fflush(stdout);
+      }
+      return true;
+    };
 
-  if (stopped) {
-    // Save exactly where the walk stopped, so a resume neither repeats nor
-    // skips a slot.
-    if (cfg.checkpoint && !stoppedAt.acc.empty()) { save(stoppedAt); }
-    res.interrupted = true;
-    printf("  [%s stage 2 GPU] interrupted; progress saved to %s\n", ph(4), savePath.c_str());
-    return res;
+    // Checkpoint on a multiply count rather than a timer, because the saver has
+    // to run at a slot boundary. Convert the configured interval using the rate
+    // measured in M6b, then clamp so it is neither constant I/O nor never.
+    u32 saveEvery = 0;
+    if (cfg.checkpoint && cfg.checkpointSeconds) {
+      const double usPerMul = 2500.0;
+      saveEvery = u32(std::clamp(double(cfg.checkpointSeconds) * 1e6 / usPerMul, 200.0, 200000.0));
+    }
+
+    auto save = [&](const Gpu::Stage2Pos& p) {
+      Stage2State st = want;
+      st.m = p.m;
+      st.jIdx = p.jIdx;
+      st.done = p.done;
+      st.acc = p.acc;
+      st.a = p.a;
+      st.s = p.s;
+      string err;
+      if (!saveStage2(savePath, st, err)) {
+        printf("\n  WARNING: could not write stage-2 checkpoint: %s\n", err.c_str());
+      }
+    };
+
+    Gpu::Stage2Pos stoppedAt;
+    accWords =
+        gpu.stage2(stage1Residue, plan, cfg.reportEvery ? cfg.reportEvery : 1000, progress,
+                   nullptr, false, haveResume ? &resumePos : nullptr,
+                   saveEvery, cfg.checkpoint ? save : std::function<void(const Gpu::Stage2Pos&)>{},
+                   &stoppedAt,
+                   // Already folded into the saved accumulator on a resume.
+                   (!haveResume && !seedAcc.empty()) ? &seedAcc : nullptr);
+
+    if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 110, ""); }
+    res.stage2Secs = timer.at();
+    res.muls = total;
+
+    if (stopped) {
+      // Save exactly where the walk stopped, so a resume neither repeats nor
+      // skips a slot.
+      if (cfg.checkpoint && !stoppedAt.acc.empty()) { save(stoppedAt); }
+      res.interrupted = true;
+      printf("  [%s stage 2 GPU] interrupted; progress saved to %s\n", ph(4), savePath.c_str());
+      return res;
+    }
+
+    // The walk is over: replace the resume point with a COMPLETED record. That
+    // is what a later run extends to a larger B2, and writing it here rather
+    // than after the gcd means a crash during the gcd -- which takes minutes --
+    // costs nothing.
+    if (cfg.checkpoint) {
+      Stage2State st = want;
+      st.complete = true;
+      st.m = plan.mLast + 1;
+      st.jIdx = 0;
+      st.done = total;
+      st.acc = accWords;
+      // A and S are per-block state of a walk that is over: ~20 MB of nothing.
+      string err;
+      if (!saveStage2(savePath, st, err)) {
+        printf("  WARNING: could not record stage 2 as complete: %s\n", err.c_str());
+      } else if (!supersededPath.empty()) {
+        // Only now, with the wider result safely on disk: a completed record for
+        // a smaller B2 is strictly dominated by this one.
+        std::error_code ec;
+        if (filesystem::remove(supersededPath, ec)) {
+          printf("  [%s stage 2 GPU] removed %s, superseded by B2=%llu\n", ph(4),
+                 supersededPath.c_str(), (unsigned long long) b2);
+        }
+      }
+    }
+
+    // The accumulator's low bits are the cheapest way to tell two runs apart --
+    // an interrupted-and-resumed walk must reproduce this exactly.
+    res.accRes64 = residue(accWords);
+    printf("  [%s stage 2 GPU] done in %s (%.0f us/mul), acc res64 %016llx\n", ph(4),
+           fmtDuration(res.stage2Secs).c_str(),
+           total ? res.stage2Secs * 1e6 / double(total) : 0.0,
+           (unsigned long long) res.accRes64);
   }
-
-  // The accumulator's low bits are the cheapest way to tell two runs apart --
-  // an interrupted-and-resumed walk must reproduce this exactly.
-  res.accRes64 = residue(accWords);
-  printf("  [%s stage 2 GPU] done in %s (%.0f us/mul), acc res64 %016llx\n", ph(4),
-         fmtDuration(res.stage2Secs).c_str(),
-         total ? res.stage2Secs * 1e6 / double(total) : 0.0,
-         (unsigned long long) res.accRes64);
 
   // ---- the gcd -----------------------------------------------------------
+  res.accRes64 = residue(accWords);
+
   const Nat Mp = mersenne(cfg.exponent);
   Nat acc = fromWords(accWords);
   if (acc.isZero()) { acc = Mp; }
@@ -838,8 +950,10 @@ PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Res
     printf("%zu found in %s\n", res.factors.size(), fmtDuration(splitTimer.at()).c_str());
   }
 
-  // Stage 2 finished cleanly, so the checkpoint has nothing left to resume.
-  if (cfg.checkpoint) { std::error_code ec; filesystem::remove(savePath, ec); }
+  // The checkpoint is deliberately NOT deleted here. It now holds a completed
+  // record, and that accumulator is what lets a later run raise B2 without
+  // re-walking (b1, b2] -- the same bargain stage 1 makes by keeping its own
+  // completed residue.
   return res;
 }
 

@@ -56,14 +56,21 @@ struct PM1Stage2Result {
   double gcdSecs = 0;
   u64 muls = 0;
   u64 accRes64 = 0;         // low 64 bits of the accumulated product
+  u64 fromB2 = 0;           // seeded from a completed run to this B2; 0 = from B1
+  bool reusedComplete = false;  // (b1, b2] was already finished; no walk at all
   Nat gcdValue;
   std::vector<FoundFactor> factors;
 };
 
 struct Stage2Plan;
 
+// Builds its own plan rather than taking one, because the range it has to walk
+// is not known until the checkpoint directory has been consulted: a completed
+// run to a smaller B2 turns this into a walk over (thatB2, b2] seeded with its
+// accumulator. Keeping that decision here puts all of stage 2's checkpoint
+// policy in one place, next to the B1 extension it mirrors.
 PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Residue,
-                             const Stage2Plan& plan, bool showProgress);
+                             u64 b1, u64 b2, u32 d, u32 w, bool showProgress);
 
 // 3 when stage 1 runs alone, 5 when a stage 2 follows. Set by the driver before
 // anything prints, so the "[2/5 stage 1 GPU]" tags count the real total.

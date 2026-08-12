@@ -399,6 +399,78 @@ int checkPlan(u64 b1, u64 b2, u32 d, u32 w, bool checkDecode) {
   return fails;
 }
 
+// Is q covered by an OPEN slot of p? idxOf maps j -> index into p.jset.
+bool coveredBy(const Stage2Plan& p, const std::vector<int>& idxOf, u64 q) {
+  const u64 jmax = u64(p.w) * p.d / 2;
+  // q can be below jmax here, unlike in checkPlan: a plan built for a HIGHER
+  // range is asked about a prime from the lower one.
+  const u64 mLo = std::max<u64>(p.mFirst, q > jmax ? (q - jmax) / p.d + 1 : 0);
+  const u64 mHi = std::min<u64>(p.mLast, (q + jmax - 1) / p.d);
+  for (u64 m = mLo; m <= mHi; ++m) {
+    const u64 md = m * p.d;
+    if (md == q) { continue; }
+    const u64 j = (q > md) ? (q - md) : (md - q);
+    if (j >= jmax) { continue; }
+    const int ji = idxOf[size_t(j)];
+    if (ji >= 0 && p.slot(m, size_t(ji))) { return true; }
+  }
+  return false;
+}
+
+// A B2 extension walks (b1, mid] in one run and (mid, b2] in another, seeding
+// the second accumulator with the first product. That is only equivalent to one
+// walk over (b1, b2] if the two ranges between them cover every prime exactly
+// once -- no prime lost at the seam, none counted twice.
+//
+// The prime SETS are what has to partition; slot COVERAGE need not be disjoint,
+// since a slot opened for a prime above mid can also straddle a prime below it,
+// which is harmless (an extra term the gcd does not mind).
+//
+// The shapes are deliberately different between the two halves: nothing about
+// the accumulator requires them to agree, and this is where that is asserted.
+int checkSplitCoverage(u64 b1, u64 mid, u64 b2, u32 dLo, u32 wLo, u32 dHi, u32 wHi) {
+  int fails = 0;
+  const Stage2Plan lo = buildStage2Plan(b1, mid, dLo, wLo);
+  const Stage2Plan hi = buildStage2Plan(mid, b2, dHi, wHi);
+  const Stage2Plan full = buildStage2Plan(b1, b2, dLo, wLo);
+
+  if (lo.nPrimes + hi.nPrimes != full.nPrimes) {
+    printf("  FAIL split at %llu: %llu + %llu primes != %llu -- the ranges do not"
+           " partition (a half-open convention is off by one)\n",
+           (unsigned long long) mid, (unsigned long long) lo.nPrimes,
+           (unsigned long long) hi.nPrimes, (unsigned long long) full.nPrimes);
+    ++fails;
+  }
+
+  std::vector<int> idxLo(size_t(u64(wLo) * dLo / 2), -1);
+  for (size_t i = 0; i < lo.jset.size(); ++i) { idxLo[lo.jset[i]] = int(i); }
+  std::vector<int> idxHi(size_t(u64(wHi) * dHi / 2), -1);
+  for (size_t i = 0; i < hi.jset.size(); ++i) { idxHi[hi.jset[i]] = int(i); }
+
+  PrimeBits primes;
+  primes.build(b1, b2);
+
+  int missFails = 0;
+  primes.forEach([&](u64 q) {
+    if (coveredBy(lo, idxLo, q) || coveredBy(hi, idxHi, q)) { return; }
+    if (missFails++ < 3) {
+      printf("  FAIL split at %llu: prime %llu is covered by neither half\n",
+             (unsigned long long) mid, (unsigned long long) q);
+    }
+  });
+  fails += missFails;
+
+  printf("  %-4s (%llu,%llu] D=%u w=%u + (%llu,%llu] D=%u w=%u  =  %llu primes,"
+         " %llu + %llu muls vs %llu whole\n",
+         fails ? "FAIL" : "ok",
+         (unsigned long long) b1, (unsigned long long) mid, dLo, wLo,
+         (unsigned long long) mid, (unsigned long long) b2, dHi, wHi,
+         (unsigned long long) full.nPrimes,
+         (unsigned long long) lo.muls(), (unsigned long long) hi.muls(),
+         (unsigned long long) full.muls());
+  return fails;
+}
+
 } // namespace
 
 int runStage2PlanTests() {
@@ -419,6 +491,14 @@ int runStage2PlanTests() {
       fails += checkPlan(1000000, 30000000, d, w, false);
     }
   }
+
+  // What a B2 extension relies on: (b1, mid] plus (mid, b2] is the same set of
+  // primes as (b1, b2], whatever pairing shape each half uses.
+  printf("\n  split coverage, for B2 extension\n");
+  fails += checkSplitCoverage(100000, 300000, 1000000, 210, 1, 420, 3);
+  fails += checkSplitCoverage(100000, 300000, 1000000, 2310, 5, 210, 1);
+  fails += checkSplitCoverage(1000, 1009, 2000, 210, 1, 210, 3);      // mid IS prime
+  fails += checkSplitCoverage(1000, 1010, 2000, 420, 1, 210, 1);      // mid is not
 
   printf("\n  shape chosen by memory budget (18 MB per residue, B1=1M)\n");
   const u64 res = 18ull << 20;

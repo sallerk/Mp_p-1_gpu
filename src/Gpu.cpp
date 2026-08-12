@@ -1517,10 +1517,13 @@ Words Gpu::stage2(const Words& x, const Stage2Plan& plan, u32 reportEvery,
                   RoeInfo* mulRoeOut, bool normalizeDiff,
                   const Stage2Pos* resume, u32 saveEvery,
                   const std::function<void(const Stage2Pos&)>& save,
-                  Stage2Pos* stoppedAt) {
+                  Stage2Pos* stoppedAt, const Words* accSeed) {
   const u64 J = plan.jset.size();
   const u64 D = plan.d;
   assert(J > 0);
+  // A resumed walk already has the seed folded into its saved accumulator;
+  // applying it again would square the earlier range's contribution.
+  assert(!(resume && accSeed));
 
   // Every setup exponent must fit a machine word. (mLast*D)^2 is the largest,
   // so this caps B2 at about 4.2e9 -- far beyond any practical bound, but an
@@ -1586,7 +1589,11 @@ Words Gpu::stage2(const Words& x, const Stage2Plan& plan, u32 reportEvery,
     // of any multiply is ever the un-normalised difference. Seeding it with a
     // difference would put two wide operands into the same multiply and double
     // the round-off cost, to save a single multiply out of millions.
-    writeIn(acc, makeWords(E, 1));
+    //
+    // A B2 extension seeds it with the completed accumulator of a lower range
+    // instead. That is still a carried, normalised residue, so the argument
+    // above is unaffected.
+    writeIn(acc, accSeed ? *accSeed : makeWords(E, 1));
   }
 
   const u64 total = plan.nSlots + 2 * (plan.nBlocks() - 1);

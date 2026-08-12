@@ -22,10 +22,12 @@ exponent = 825881
 #  "auto" picks the B1 that minimises expected total work, using Dickman's rho
 #  to weigh the chance of success against the cost. It needs factored_to below.
 #
-#  NOTE: this version implements stage 1 only. Stage-1-only optima are larger
-#  than what you would choose with a stage 2 following, because there is no
-#  second stage to catch a near miss. When stage 2 lands, "auto" will pick
-#  SMALLER values -- that is expected, not a regression.
+#  With a stage 2 following, "auto" picks a SMALLER B1 than it would for a
+#  stage-1-only run -- the second stage catches the near misses, so paying for
+#  them twice is waste. Setting `stages = 1` therefore raises the B1 that auto
+#  chooses; that is the model working, not a bug.
+#
+#  Raising b1 later does not throw away the earlier run: see `extend` below.
 # ---------------------------------------------------------------------------
 b1 = auto
 
@@ -108,6 +110,23 @@ checkpoint_seconds = 300
 
 
 # ---------------------------------------------------------------------------
+#  REUSING COMPLETED WORK WHEN YOU RAISE A BOUND.
+#
+#  On by default. Raising a bound then costs only the difference:
+#
+#    b1  a completed smaller B1 is extended to the new one, since E(oldB1)
+#        divides E(newB1). The saving is exactly oldB1/newB1 of the squarings.
+#    b2  a completed stage 2 leaves its accumulator on disk, and the next run
+#        walks only (oldB2, newB2]. The accumulator is a product, so the two
+#        ranges simply multiply -- and the pairing shape does not have to match.
+#
+#  The superseded stage-2 file is deleted once the wider one is safely written.
+#  Set to 0 to always compute from scratch (useful only for verification).
+# ---------------------------------------------------------------------------
+extend = 1
+
+
+# ---------------------------------------------------------------------------
 #  HOW HARD TO PUSH THE BOUNDS.
 #
 #  The expected-cost minimum this program optimises is very FLAT. Measured for
@@ -155,6 +174,11 @@ stages = auto
 
 # B2, the stage-2 bound. 'auto' lets the model pick it alongside B1; expect
 # something like 30x B1. Ignored (and rejected as a contradiction) if stages = 1.
+#
+# Raising b2 after a stage 2 has finished walks only the new range, so working an
+# exponent upwards in steps costs the same as going straight to the final bound.
+# Note that `auto` does NOT know what is already on disk -- if you are stepping
+# bounds up deliberately, set b2 explicitly.
 b2 = auto
 
 # ---------------------------------------------------------------------------

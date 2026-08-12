@@ -60,6 +60,7 @@ int runPM1Tests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 int runExtendTests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 int runPP1Tests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 int runStage2Tests(GpuCommon shared, Queue* q, const std::string& fftSpec);
+int runB2ExtendTests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
                             const std::string& forcedSpec, bool verify);
 void recommendFFT(GpuCommon shared, Queue* q, u32 E);
@@ -155,6 +156,7 @@ void usage() {
 "      =engine              FFT/squaring engine vs a CPU reference\n"
 "      =pm1                 P-1 against known factors\n"
 "      =stage2              stage-2 engine vs a CPU reference\n"
+"      =b2extend            raising B2 on a completed stage 2\n"
 "  --bench                time every FFT config that can hold an exponent\n"
 "  --tune[=opts]          measure FFT configs and write tune.txt\n"
 "\n"
@@ -537,11 +539,13 @@ static int runMain(int argc, char** argv) {
       if (selftest == "all" || selftest == "extend")  { rc |= runExtendTests(shared, &queue, args.fftSpec); }
       if (selftest == "all" || selftest == "pp1")     { rc |= runPP1Tests(shared, &queue, args.fftSpec); }
       if (selftest == "all" || selftest == "stage2")  { rc |= runStage2Tests(shared, &queue, args.fftSpec); }
+      if (selftest == "all" || selftest == "b2extend") { rc |= runB2ExtendTests(shared, &queue, args.fftSpec); }
       if (selftest != "all" && selftest != "engine" && selftest != "pm1"
-          && selftest != "extend" && selftest != "pp1" && selftest != "stage2") {
+          && selftest != "extend" && selftest != "pp1" && selftest != "stage2"
+          && selftest != "b2extend") {
         printf("unknown selftest '%s'\n"
                "  no GPU: gcd, exponent, stage2plan, bounds\n"
-               "  GPU:    engine, pm1, extend, pp1, stage2\n"
+               "  GPU:    engine, pm1, extend, pp1, stage2, b2extend\n"
                "  omit =which to run them all\n",
                selftest.c_str());
         return 2;
@@ -695,8 +699,10 @@ static int runMain(int argc, char** argv) {
     // second stage wasted work.
     if (runStage2 && !r.foundFactor && !gInterrupted.load()) {
       printf("\n");
-      const Stage2Plan plan = buildStage2Plan(b1, bounds.b2, shape.d, shape.w);
-      PM1Stage2Result s2 = runPM1Stage2(*gpu, cfg, r.residue, plan, true);
+      // The plan is built inside: which range actually has to be walked depends
+      // on whether a completed stage 2 for a smaller B2 is on disk.
+      PM1Stage2Result s2 = runPM1Stage2(*gpu, cfg, r.residue, b1, bounds.b2,
+                                        shape.d, shape.w, true);
 
       printf("\n");
       if (s2.interrupted) {

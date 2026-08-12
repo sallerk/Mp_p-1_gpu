@@ -415,12 +415,17 @@ public:
     Words acc, a, s;
   };
 
+  // accSeed starts the accumulator at a value other than 1. That is all a B2
+  // extension needs: the accumulator is a plain product over slots, so walking
+  // (b2old, b2new] on top of the finished product for (b1, b2old] gives exactly
+  // the product for (b1, b2new]. Mutually exclusive with `resume`, where the
+  // seed is already folded into the saved accumulator.
   Words stage2(const Words& x, const Stage2Plan& plan, u32 reportEvery,
                const std::function<bool(u64, u64)>& progress,
                RoeInfo* mulRoeOut = nullptr, bool normalizeDiff = false,
                const Stage2Pos* resume = nullptr, u32 saveEvery = 0,
                const std::function<void(const Stage2Pos&)>& save = {},
-               Stage2Pos* stoppedAt = nullptr);
+               Stage2Pos* stoppedAt = nullptr, const Words* accSeed = nullptr);
 
   vector<Buffer<Word>> makeBufVector(u32 size);
 

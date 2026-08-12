@@ -1,4 +1,4 @@
-# Mp_p-1_gpu 1.0
+# Mp_p-1_gpu 1.1
 
 GPU **P-1** factoring of Mersenne numbers `M_p = 2^p - 1`, with both stages, and P+1 at currently stage 1 only.
 Windows / MSVC, no external dependencies — no GMP, no CUDA or OpenCL SDK.
@@ -10,7 +10,7 @@ Windows / MSVC, no external dependencies — no GMP, no CUDA or OpenCL SDK.
 
 ## Download
 
-Take `Mp_p-1_gpu-1.0-win64.zip` from the
+Take `Mp_p-1_gpu-1.1-win64.zip` from the
 [Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), unzip it
 anywhere, and run it. There is nothing to install:
 
@@ -138,11 +138,30 @@ tolerance   bounds                P(factor)   work (PRP=1)
 Raise `bounds_tolerance` to spend more for a better chance; raise `bias` if a
 factor is worth more to you than one PRP test.
 
-## Resuming
+## Resuming, and raising the bounds
 
-Runs checkpoint automatically and resume when restarted. Stage 1 will also reuse
-a completed smaller-B1 result and extend it rather than starting over. Ctrl-C is
-safe.
+Runs checkpoint automatically and resume when restarted. Ctrl-C is safe.
+
+Completed work is reused rather than repeated, so raising a bound costs only the
+difference:
+
+- **raise `b1`** — a completed smaller B1 is extended to the new one; the saving
+  is exactly `oldB1 / newB1` of the squarings.
+- **raise `b2`** — a completed stage 2 leaves its accumulator behind, and the
+  next run walks only `(oldB2, newB2]`. The pairing shape may differ between the
+  two; nothing about the accumulator requires it to match.
+
+So the sensible way to work an exponent is to start at modest bounds and raise
+them if nothing turns up. Re-running an exponent that is already finished at
+those bounds does no GPU work at all.
+
+Both are on by default; `extend = 0` in `config.txt` turns them off.
+
+Checkpoints are named `pm1_<exponent>_b1_<B1>.save` (stage 1) and
+`pm1_<exponent>_s2_<B1>_<B2>.save` (stage 2). Deleting them costs work, never
+correctness — every field that could make a residue mean something else is
+recorded and checked, so a file that does not match the job is refused, not
+adapted.
 
 ## Self-tests
 
@@ -151,8 +170,8 @@ Mp_p-1_gpu.exe --selftest
 ```
 
 `gcd`, `exponent`, `stage2plan` and `bounds` need no GPU. `engine`, `pm1`,
-`pp1`, `extend` and `stage2` exercise the GPU against exact CPU arithmetic and
-against known factors of real Mersenne numbers.
+`pp1`, `extend`, `stage2` and `b2extend` exercise the GPU against exact CPU
+arithmetic and against known factors of real Mersenne numbers.
 
 ## Scope and limitations
 
@@ -164,8 +183,10 @@ against known factors of real Mersenne numbers.
   all. Its yield per unit work is well below P-1's, so P-1 is the default.
 - **P+1 currently borrows P-1's B1**, which is chosen for a different smoothness
   target.
-- **No B2 extension.** Stage 1 can extend a completed B1; a finished stage 2
-  re-runs from the start if you raise B2.
+- **Bound selection ignores work already done.** Raising B2 on a finished stage 2
+  is cheap, but `auto` still picks bounds as though nothing had been computed
+  yet. Set `b1` and `b2` explicitly if you are deliberately working an exponent
+  upwards.
 - Not a drop-in replacement for gpuowl: this does factoring only, no PRP or LL.
 
 ## Licence
