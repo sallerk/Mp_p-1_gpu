@@ -45,11 +45,12 @@ Written for this program, and GPLv3 along with the rest:
 | Subquadratic GCD | `Gcd.{h,cpp}` — recursive half-GCD with parallel cofactor apply |
 | P-1 / P+1 driver | `PM1.{h,cpp}` — stage 1, P+1 Lucas ladder, stage-2 driver |
 | Stage-2 pairing | `Stage2Plan.{h,cpp}` — Montgomery pairing with a matching window |
-| Checkpointing | `Save.{h,cpp}`, `Stage2Save.{h,cpp}` |
+| Checkpointing | `Save.{h,cpp}`, `Stage2Save.{h,cpp}`, `Pp1Stage2Save.{h,cpp}` |
 | Bounds | the cost model and `chooseBounds` in `Bounds.{h,cpp}` |
 | Config and tests | `Config.{h,cpp}`, `Selftest.cpp`, `testBigInt.cpp` |
 | Build | `build.bat`, `tools/` |
 | Stage-2 kernels | `subWords` in `src/cl/etc.cl` |
+| P+1 stage 2 | `lucasVResidue`, `pp1Stage2`, `renormalize` in `Gpu.{h,cpp}` (no new kernel — built entirely from the existing `subWords`/`modMul`/`squareLL`) |
 
 `main.cpp` is original; `clshim.cpp` is original (it resolves OpenCL entry
 points from the driver at run time so no SDK is needed).

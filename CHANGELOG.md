@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.2
+
+**P+1 stage 2.** P+1 could only find a factor q whose q+1 was entirely
+B1-smooth. It can now also catch q where q+1 is B1-smooth apart from one
+additional prime in (B1, B2] — the same near-miss stage 2 has always caught
+for P-1.
+
+P-1's exact pairing trick doesn't transfer: P-1 works with an explicit ring
+element (x^n, freely divisible); P+1's group element is never explicit, only
+its Lucas-V trace is computable in Z/NZ. Real implementations (GMP-ECM) handle
+this with a much heavier machine (Chebyshev/RLP resultants via FFT) built for
+asymptotic speed. This instead uses a simpler construction, derived from first
+principles and checked three ways (literature cross-check, an independent
+numerical check on a real prime, and an algebraic proof) — see
+`1.2/README.md` and the comment above `Gpu::pp1Stage2`. In short: V's built-in
+evenness (V_-n = V_n) gives P+1 the same "catches either candidate" property
+P-1 manufactures by squaring exponents, but for free, on linear indices — so
+**`Stage2Plan`, the sieve and pairing-assignment code, is reused completely
+unchanged**. Only the arithmetic underneath a slot is new.
+
+A precision question came up during design — do the block-step and T-table
+build need explicit re-carrying, since (unlike P-1's single-use per-slot
+difference) they persist state across many steps? Verified empirically
+(`--selftest=pp1stage2`, up to ~100000 accumulator slots at a realistic
+exponent, with a deliberately-broken control arm) that the answer is no: the
+recurrence always interposes an ordinary carrying multiply between successive
+uncarried subtracts, so the width never compounds past what P-1's own
+single-use case already relies on being safe. The precaution is kept anyway —
+cheap, and the failure mode of removing it and being wrong would be a silent
+bad answer, not a crash — but the reasoning is written down rather than just
+assumed, including the fact that the original worry turned out to rest on an
+incomplete mental model of the recurrence.
+
+Shares P-1's B1 and B2/pairing-shape choice (P+1 already had no B1 model of
+its own; this is the same category of approximation, not a new one). Per-seed
+checkpointing and interrupted-walk resume are supported; B2 extension for P+1
+is explicitly out of scope for this version — the checkpoint format has room
+for it later without another format bump.
+
+Also fixed: a pure `method = pp1` job's B2 was never actually computed —
+`chooseBounds` was only ever told a stage 2 might be wanted when P-1 itself
+was active, so a P+1-only run always saw stage 2 as "not worth it" regardless
+of `b2` or `stages`. And P+1's progress lines, previously hardcoded to a
+literal `[n/3]`, now use the same phase-counting machinery P-1's lines do, so
+a stage-2 run reports `[n/5]` correctly instead of always claiming 3 phases.
+
+**New self-test** `--selftest=pp1stage2`: the underlying algebraic identity
+checked directly (no GPU); the new Lucas-ladder primitive against an
+independent CPU reference (ordinary exponentiation in a quadratic ring,
+sharing no code with the GPU ladder); the full walk against the same kind of
+reference; the precision question above; interrupt/resume; checkpoint
+round-trip and rejection rules; and a real factor of M862907 whose missing
+prime is provably outside B1's reach and inside B2's.
+
 ## 1.1
 
 **B2 extension.** Raising B2 on an exponent whose stage 2 already finished now
