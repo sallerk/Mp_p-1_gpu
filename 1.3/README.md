@@ -113,6 +113,17 @@ follows, three without:
 Progress lines rewrite in place on a terminal, and are written once a minute
 when redirected to a file.
 
+The gcd phases report a percentage that jumps straight from 0% to roughly
+**62%**, then fills in the rest more smoothly. That is not a stall: the
+half-GCD halves its operand's bit length each pass, and each halving costs
+roughly half of what the one before it did, so the percentage is weighted by
+work (`1 - (bits left / bits start)^1.39`, the exponent measured from the
+algorithm's own cost curve), not by bits. The very first pass -- on the
+full-size operand, the single most expensive step in the whole gcd -- reports
+no progress at all while it runs, then lands on `1 - 0.5^1.39 ≈ 61.8%` the
+instant it finishes. This is expected on every gcd, stage 1 or stage 2, P-1 or
+P+1 -- they all share the same `gcdWithProgress` reporting.
+
 ## Results
 
 `results.txt` gets one JSON object per line, the format
@@ -127,6 +138,13 @@ when redirected to a file.
 `status` is `F` (factor), `NF` (no factor), or `C` (a divisor that could not be
 split into primes — recorded for you, not submittable). One line per job, with
 both bounds when stage 2 ran.
+
+Its `timestamp` is **UTC**, deliberately — it is the field mersenne.org
+actually wants. The console and `Mp_p-1_gpu.log` timestamps are your machine's
+**local** time instead, since that is what a person watching the run wants. Do
+not be surprised if a line in the log and the `results.txt` entry it caused
+carry timestamps several hours apart; both are correct, just in different
+zones.
 
 ## Choosing bounds
 
@@ -226,6 +244,11 @@ exact CPU arithmetic and against known factors of real Mersenne numbers.
   this exponent".
 - **P+1 is a secondary mode.** Its yield per unit work is well below P-1's, so
   P-1 is the default; run it in earnest only once P-1 has been tried.
+- **`method = both` does not stop early across methods.** Finding a factor in
+  P+1 skips that method's own remaining seeds and its stage 2 (a factor
+  already in hand makes more searching wasted work) — but P-1 still runs
+  afterward regardless, at full cost. The equivalent "stop, we're done"
+  check exists *within* each method, not *between* them yet.
 - **P+1 has its own B1 and B2 model now, but still shares P-1's pairing
   shape** (`stage2_d`, `stage2_w`) — a GPU-memory budget decision (one
   shared T-table) rather than a cost-model gap.

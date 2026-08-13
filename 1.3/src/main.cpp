@@ -318,6 +318,10 @@ void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
 // this is for the person (or the log) watching.
 void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
                    u64 b1, u64 b2, const char* worktype, u32 seed) {
+  if (factors.size() > 1) {
+    log("  the gcd was a product of %zu factors (every factor with a\n"
+        "  B1-smooth k comes out of the same gcd):\n\n", factors.size());
+  }
   for (const FoundFactor& ff : factors) {
     if (ff.prime && ff.dividesMp) {
       log("  *** M%u has a factor: %s ***\n", cfg.exponent, ff.value.dec().c_str());
@@ -794,8 +798,8 @@ static int runMain(int argc, char** argv) {
       if (!anyFactor) {
         writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? pp1Bounds.b2 : pp1B1, {}, 0);
       }
+      log("\n  appended to %s\n", cfg.resultsFile.c_str());
       if (!cfg.doPM1) {
-        log("\n  appended to %s\n", cfg.resultsFile.c_str());
         return 0;
       }
     }
@@ -815,38 +819,22 @@ static int runMain(int argc, char** argv) {
 
     printf("\n");
     if (r.foundFactor) {
-      if (r.factors.size() > 1) {
-        log("  the gcd was a product of %zu factors (every factor with a\n"
-            "  B1-smooth k comes out of the same gcd):\n\n", r.factors.size());
-      }
-      for (const FoundFactor& ff : r.factors) {
-        if (ff.prime && ff.dividesMp) {
-          log("  *** M%u has a factor: %s ***\n", cfg.exponent, ff.value.dec().c_str());
-          log("      %zu bits, k = %llu, verified 2^p == 1 (mod q)\n",
-              ff.value.bits(), (unsigned long long) ff.k);
-        } else if (ff.dividesMp) {
-          log("  *** M%u has a COMPOSITE divisor: %s ***\n",
-              cfg.exponent, ff.value.dec().c_str());
-          log("      %zu bits; could not be split into primes -- its factors\n"
-              "      have k larger than the trial-division limit\n", ff.value.bits());
-        } else {
-          log("  !!! %s does NOT divide M%u -- this is a bug, please report\n",
-              ff.value.dec().c_str(), cfg.exponent);
-        }
-      }
+      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", 0);
+      log("  appended to %s\n", cfg.resultsFile.c_str());
     } else {
       log("  M%u: no factor found with B1 = %llu\n",
           cfg.exponent, (unsigned long long) r.b1Used);
+      // ONE result per job, not one per stage. If stage 2 is going to run, the
+      // result is written after it with both bounds; emitting a stage-1-only
+      // "NF" here as well would double-report the exponent to PrimeNet and
+      // understate the work actually done. A factor found in stage 1 ends the
+      // job, so that case is always reported above regardless of runStage2 --
+      // and the "appended" line only prints when a write actually happened.
+      if (!runStage2) {
+        writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, 0);
+        log("  appended to %s\n", cfg.resultsFile.c_str());
+      }
     }
-    // ONE result per job, not one per stage. If stage 2 is going to run, the
-    // result is written after it with both bounds; emitting a stage-1-only "NF"
-    // here as well would double-report the exponent to PrimeNet and understate
-    // the work actually done. A factor found in stage 1 ends the job, so that
-    // case is reported here and stage 2 never runs.
-    if (r.foundFactor || !runStage2) {
-      writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, r.factors, 0);
-    }
-    log("  appended to %s\n", cfg.resultsFile.c_str());
 
     // ---- stage 2 ----------------------------------------------------------
     // Only when stage 1 came up empty. A factor already in hand makes the whole

@@ -10,8 +10,13 @@
 #  THE MERSENNE NUMBER.  M_p = 2^p - 1, p must be PRIME.
 #  M_p is never built in memory, so p may be as large as the GPU can hold an
 #  FFT for -- hundreds of millions is the intended range.
+#
+#  There is also a LOWER limit: 786613. Below that, even the smallest FFT
+#  shape in the catalog (256x256x2) has too few bits/word to be usable, and
+#  every command -- --bounds, --tune, a real run -- just fails with "no FFT
+#  fits this exponent".
 # ---------------------------------------------------------------------------
-exponent = 825881
+exponent = 28733813
 
 
 # ---------------------------------------------------------------------------
@@ -20,17 +25,26 @@ exponent = 825881
 #    pp1    P+1 only. Finds factors P-1 cannot, and vice versa, but at lower
 #           yield per unit of GPU time -- a secondary mode, not a replacement.
 #    both   P+1 first (cheaper per bound and less likely to succeed), then P-1.
+#           NOTE: if P+1 already finds a factor, P-1 still runs to completion
+#           afterward -- there is no "stop, a factor is already in hand" check
+#           ACROSS methods yet (only within one method's own stage 1 -> stage 2).
 #
-#  P+1 currently borrows P-1's `b1`/`b2`/`stage2_d`/`stage2_w` below -- it has
-#  no bounds model of its own yet, so this is the same approximation as using
-#  one B1 for two different smoothness targets, not a separate concern.
+#  P+1 has its own B1 and B2 model now (`b1`/`b2` below apply to BOTH methods,
+#  each optimising its own bounds against the same exponent/bias/tolerance --
+#  they are not forced to the same B1 or B2). Still shares P-1's `stage2_d`/
+#  `stage2_w` pairing SHAPE, a GPU-memory budget decision, not a cost-model gap.
 #
 #  P+1 needs a base ("seed"); which seeds find a factor depends on q in a way
 #  that cannot be known in advance (roughly half of seeds degenerate into a
 #  P-1-shaped computation for a given q), so several are tried per exponent.
 # ---------------------------------------------------------------------------
-method = pm1
-pp1_seeds = 3, 5, 7
+method = both
+
+# A comma-separated LIST of literal seed values (each 3..1000000), NOT a
+# count -- "pp1_seeds = 3" tries exactly ONE seed, the value 3, not three
+# seeds. For the usual several-seeds coverage write out the list, e.g.
+# "pp1_seeds = 3,5,7".
+pp1_seeds = 3
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +72,7 @@ b1 = auto
 #  The true value for an exponent is on mersenne.org. "auto" guesses from the
 #  size of the exponent, which is a fallback, not a substitute.
 # ---------------------------------------------------------------------------
-factored_to = 76
+factored_to = 70
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +80,7 @@ factored_to = 76
 #  1.0 = equally valuable. 2.0 = a factor is worth two PRP tests, which pushes
 #  "auto" towards larger bounds. Ignored when b1 is set explicitly.
 # ---------------------------------------------------------------------------
-bias = 1.0
+bias = 2.0
 
 
 # ---------------------------------------------------------------------------

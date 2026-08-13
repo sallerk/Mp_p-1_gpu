@@ -104,6 +104,61 @@ still out of scope -- see `Pp1Stage2Save.h`): only the exact-match case,
 re-running the same `(exponent, b1, b2, seed)`, is affected. Raising B2 on a
 finished P+1 stage 2 still re-walks the whole range.
 
+**Audited a real run end to end** (an 8-digit exponent, M28733813, plus
+earlier real runs on M786613 and M7873417 -- the latter found a genuine
+3-factor composite, `236202511 * 2629453581823 * 12346147729361`) --
+cross-checking every log line, `results.txt` entry, and checkpoint file
+against what the code should have produced. The bounds model checked out
+exactly: `--bounds` against the same config independently reproduces both
+methods' chosen B1/B2 to the exact value the real run used. Two real
+reporting defects turned up in the process, both fixed:
+
+- **A multi-factor report was missing context depending on which method
+  found it.** P-1's stage 1 printed "the gcd was a product of N factors"
+  before a multi-factor announcement; the `reportFactors()` helper --
+  despite being documented as "the shared helper for all factor
+  announcements" and used by P+1's stage 1, P+1's stage 2, and P-1's stage
+  2 -- never had that preamble, because P-1's stage 1 kept its own separate
+  inline copy of the announcement loop instead of calling the helper. Seen
+  live: P+1 announced M7873417's 3-factor composite with no preamble; P-1,
+  re-finding the identical 3 factors 90 seconds later, announced them WITH
+  it. Moved the preamble into `reportFactors()` and pointed P-1's stage 1 at
+  it, so every call site is consistent and the duplicated loop is gone.
+- **"appended to results.txt" didn't reliably mean a line was appended.**
+  On P-1's side it printed unconditionally right after stage 1, including
+  the common case (stage 2 about to run) where nothing has been written
+  yet -- so a "no factor, stage 2 next" job showed the confirmation twice
+  for one real write. On P+1's side, for `method = both`, the same message
+  was gated behind the pp1-only early return and so never printed at all,
+  even though P+1's own write did happen. Both fixed by moving the log line
+  inside the branch that actually calls `writeResultJson` (or the
+  `reportFactors` that wraps it).
+
+Also surfaced, not a code bug but worth knowing: `results.txt`'s
+`timestamp` is UTC (`gmtime_s`, matching what mersenne.org wants) while
+`Mp_p-1_gpu.log`'s and the console's timestamps are local time
+(`localtime`) -- the same event can legitimately show several hours apart
+between the two, which is easy to mistake for a bug during exactly this
+kind of audit. And `method = both` does not skip P-1 once P+1 already found
+a factor -- P-1 still runs its own full stage 1 (and stage 2, if stage 1
+doesn't find it) at full cost, confirmed live by the M7873417 run re-finding
+the same factor a second time. Both are now documented in `README.md`'s
+Scope section rather than being surprises; the `method = both` gap is also
+tracked as outstanding work (`tasks/todo.md`) since the existing
+within-method "stop, we're done" rule could in principle extend across
+methods too.
+
+**`config.txt`'s own comments had gone stale.** The `method` section still
+described P+1 as borrowing P-1's B1 *and* B2 with no bounds model of its
+own -- true when it was written, false since the B1 (and, later, B2) work
+above landed, and never updated because a config template doesn't sit next
+to the code that made it stale. Rewritten to describe the current,
+independent-bounds behavior, and `pp1_seeds` gained an explicit comment that
+it is a literal comma-separated list of seed VALUES, not a count --
+`pp1_seeds = 3` requests exactly one seed (value 3), not three. That gap
+was real enough to trip up a config written fresh during this same
+project's own testing.
+
 ## 1.2
 
 **P+1 stage 2.** P+1 could only find a factor q whose q+1 was entirely
