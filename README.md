@@ -11,24 +11,28 @@ OpenCL SDK.
 
 ## Download
 
-Each version has its own release, with a **prebuilt 64-bit Windows binary**
-inside — you do not need Visual Studio, a CUDA Toolkit or an OpenCL SDK to run
-it. The only requirement is `OpenCL.dll`, which ships with your GPU driver.
+The current version has its own release, with a **prebuilt 64-bit Windows
+binary** inside — you do not need Visual Studio, a CUDA Toolkit or an OpenCL
+SDK to run it. The only requirement is `OpenCL.dll`, which ships with your GPU
+driver. Older versions' prebuilt binaries are no longer distributed; their
+source is still in this repository (see below) and builds the same way.
 
 | version | download | |
 |---|---|---|
 | **1.3** | [**Mp_p-1_gpu-1.3-win64.zip**](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.3/Mp_p-1_gpu-1.3-win64.zip) | current. P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. Start here — see [1.3/README.md](1.3/README.md). |
-| 1.2 | [Mp_p-1_gpu-1.2-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.2/Mp_p-1_gpu-1.2-win64.zip) | P+1 gained stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Kept as-is. |
-| 1.1 | [Mp_p-1_gpu-1.1-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.1/Mp_p-1_gpu-1.1-win64.zip) | raising B2 on a finished P-1 stage 2 reuses the completed accumulator and walks only the new range, instead of starting over. Kept as-is. |
-| 1.0 | [Mp_p-1_gpu-1.0-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.0/Mp_p-1_gpu-1.0-win64.zip) | first release. GPU P-1 with both stages, P+1 stage 1, automatic bound selection, checkpoint/resume, PrimeNet-format JSON results. Kept as-is. |
+| 1.2 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.2) | P+1 gained stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Kept as-is. |
+| 1.1 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.1) | raising B2 on a finished P-1 stage 2 reuses the completed accumulator and walks only the new range, instead of starting over. Kept as-is. |
+| 1.0 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.0) | first release. GPU P-1 with both stages, P+1 stage 1, automatic bound selection, checkpoint/resume, PrimeNet-format JSON results. Kept as-is. |
 
-All of them are on the [releases page](https://github.com/sallerk/Mp_p-1_gpu/releases).
-GitHub's green *Code → Download ZIP* button gives you the **whole repository**,
-every version at once — the links above are the way to get one version on its
-own.
+The [releases page](https://github.com/sallerk/Mp_p-1_gpu/releases) has the
+full history; 1.0–1.2 there have their changelog notes but no attached binary.
+GitHub's green *Code → Download ZIP* button gives you the **whole
+repository**, every version at once.
 
 Each release is also its own directory in this repository, kept exactly as it
-shipped. What changed between them is in [CHANGELOG.md](CHANGELOG.md).
+shipped — clone it and run `build.bat` (Visual Studio 2019/2022, "Desktop
+development with C++") to get a binary for any version. What changed between
+them is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
