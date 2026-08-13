@@ -311,23 +311,26 @@ void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
   fclose(f);
 }
 
-// Console reporting. Separate from the results file on purpose: the file is
-// machine-readable for submission, the console is for the person watching.
+// Console AND log reporting -- this is the single most important line an
+// unattended run produces, so it goes through log() rather than printf(),
+// unlike most of this file's routine progress output. Separate from the
+// results file on purpose: that one is machine-readable for submission,
+// this is for the person (or the log) watching.
 void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
                    u64 b1, u64 b2, const char* worktype, u32 seed) {
   for (const FoundFactor& ff : factors) {
     if (ff.prime && ff.dividesMp) {
-      printf("  *** M%u has a factor: %s ***\n", cfg.exponent, ff.value.dec().c_str());
-      printf("      %zu bits, k = %llu, verified 2^p == 1 (mod q)\n",
-             ff.value.bits(), (unsigned long long) ff.k);
+      log("  *** M%u has a factor: %s ***\n", cfg.exponent, ff.value.dec().c_str());
+      log("      %zu bits, k = %llu, verified 2^p == 1 (mod q)\n",
+          ff.value.bits(), (unsigned long long) ff.k);
     } else if (ff.dividesMp) {
-      printf("  *** M%u has a COMPOSITE divisor: %s ***\n",
-             cfg.exponent, ff.value.dec().c_str());
-      printf("      %zu bits; could not be split -- its factors have k larger\n"
-             "      than the trial-division limit\n", ff.value.bits());
+      log("  *** M%u has a COMPOSITE divisor: %s ***\n",
+          cfg.exponent, ff.value.dec().c_str());
+      log("      %zu bits; could not be split -- its factors have k larger\n"
+          "      than the trial-division limit\n", ff.value.bits());
     } else {
-      printf("  !!! %s does NOT divide M%u -- this is a bug, please report\n",
-             ff.value.dec().c_str(), cfg.exponent);
+      log("  !!! %s does NOT divide M%u -- this is a bug, please report\n",
+          ff.value.dec().c_str(), cfg.exponent);
     }
   }
   writeResultJson(cfg, worktype, b1, b2, factors, seed);
@@ -358,6 +361,14 @@ static int runMain(int argc, char** argv) {
   // stall look like it happened at the last line that happened to be flushed.
   // The in-place progress line needs unbuffered output anyway.
   setvbuf(stdout, nullptr, _IONBF, 0);
+
+  // log() (used throughout tune.cpp, and for job outcomes below) has always
+  // written to stdout only: initLog() -- the call that opens its file half --
+  // was declared and defined but never actually invoked anywhere in this
+  // program, upstream included. Appended, like every other file this program
+  // accumulates (tune.txt, Mp_p-1_gpu-tune-config.txt, ...), so nothing here
+  // needs rotation or size management; delete it to reset.
+  initLog("Mp_p-1_gpu.log");
 
   SetConsoleCtrlHandler(ctrlHandler, TRUE);
 
@@ -460,18 +471,26 @@ static int runMain(int argc, char** argv) {
              double(stage2NumJ(s.d, s.w)) * double(residueBytes) / (1u << 30));
       printBoundsSurface(cfg.exponent, cfg.factoredTo, cfg.bias, cm);
       if (cfg.doPP1) {
-        // Not a full surface -- P+1 doesn't have enough of a model yet (B2
-        // and pairing shape are still borrowed from P-1's own choice above)
-        // to make a whole surface meaningful, just enough to make the model
-        // visible through this diagnostic rather than only at job-run time.
-        const Bounds pm1b = chooseBounds(cfg.exponent, cfg.factoredTo, cfg.bias, cm);
-        const Bounds pp1b = choosePP1B1(cfg.exponent, cfg.factoredTo, cfg.bias, cm,
-                                        u32(cfg.pp1Seeds.size()), pm1b.b2, cfg.b1);
-        printf("\nP+1 (%u seeds, own B1 model -- B2/pairing shape still borrowed from P-1):\n"
-               "  B1=%llu  P(factor)=%.3f%% (%.3f%% + %.3f%%)  work %.1f%% of a PRP test\n",
-               u32(cfg.pp1Seeds.size()), (unsigned long long) pp1b.b1, pp1b.prob() * 100,
-               pp1b.probStage1 * 100, pp1b.probStage2 * 100,
-               (pp1b.workStage1 + pp1b.workStage2) / cfg.exponent * 100);
+        // Not a full surface -- just enough to make P+1's own model visible
+        // through this diagnostic rather than only at job-run time. B1 and
+        // B2 are both genuinely chosen for P+1 here; the pairing SHAPE (D,
+        // w, T-table sizing) is still shared with P-1, a GPU-memory budget
+        // decision rather than a cost-model gap.
+        const Bounds pp1b = choosePP1Bounds(cfg.exponent, cfg.factoredTo, cfg.bias, cm,
+                                            u32(cfg.pp1Seeds.size()), cfg.b1, cfg.b2);
+        if (pp1b.b2 > pp1b.b1) {
+          printf("\nP+1 (%u seeds, own B1/B2 model):\n"
+                 "  B1=%llu B2=%llu  P(factor)=%.3f%% (%.3f%% + %.3f%%)  work %.1f%% of a PRP test\n",
+                 u32(cfg.pp1Seeds.size()), (unsigned long long) pp1b.b1,
+                 (unsigned long long) pp1b.b2, pp1b.prob() * 100,
+                 pp1b.probStage1 * 100, pp1b.probStage2 * 100,
+                 (pp1b.workStage1 + pp1b.workStage2) / cfg.exponent * 100);
+        } else {
+          printf("\nP+1 (%u seeds, own B1/B2 model):\n"
+                 "  B1=%llu (no stage 2)  P(factor)=%.3f%%  work %.1f%% of a PRP test\n",
+                 u32(cfg.pp1Seeds.size()), (unsigned long long) pp1b.b1, pp1b.prob() * 100,
+                 pp1b.workStage1 / cfg.exponent * 100);
+        }
       }
       return 0;
     }
@@ -636,19 +655,21 @@ static int runMain(int argc, char** argv) {
     u64 b1 = bounds.b1;
     const bool runStage2 = wantStage2 && bounds.b2 > bounds.b1;
 
-    // P+1's own B1: q+1's smoothness target is different from P-1's q-1 (see
-    // pp1Prob's own comment in Bounds.cpp), so reusing bounds.b1 here would
-    // optimise the wrong quantity. B2 and the pairing shape are still
-    // borrowed from P-1's bounds -- P+1 has no cost model of its own for
-    // stage 2 yet, and `stages = 1` still means "no stage 2 for either
-    // method," a single consistent switch.
-    const Bounds pp1Bounds = choosePP1B1(cfg.exponent, cfg.factoredTo, cfg.bias, cost,
-                                         u32(cfg.pp1Seeds.size()), bounds.b2, cfg.b1);
+    // P+1's own bounds: q+1's smoothness target is different from P-1's q-1
+    // (see pp1Prob's own comment in Bounds.cpp), so reusing P-1's B1 or B2
+    // here would optimise the wrong quantity. The pairing SHAPE (D, w,
+    // T-table sizing) is still shared -- that's a GPU-memory budget decision,
+    // not a cost-model gap, and splitting it would double VRAM use for both
+    // methods running at once. `stages = 1` still means "no stage 2 for
+    // either method," a single consistent switch (wantAnyStage2 above).
+    const Bounds pp1Bounds = choosePP1Bounds(cfg.exponent, cfg.factoredTo, cfg.bias, cost,
+                                             u32(cfg.pp1Seeds.size()), cfg.b1, cfg.b2,
+                                             wantAnyStage2);
     const u64 pp1B1 = pp1Bounds.b1;
-    const bool wantPp1Stage2 = cfg.doPP1 && cfg.stage2Mode != STAGE2_OFF && bounds.b2 > pp1B1;
+    const bool wantPp1Stage2 = cfg.doPP1 && cfg.stage2Mode != STAGE2_OFF && pp1Bounds.b2 > pp1B1;
 
     // The shape above was sized against a GUESS (cfg.b1, or 100000 when b1 is
-    // auto) because the real B1s aren't known until chooseBounds/choosePP1B1
+    // auto) because the real B1s aren't known until chooseBounds/choosePP1Bounds
     // run, and those need the shape's mulsPerPrime first. A small exponent or
     // a low bias/factoredTo can auto-pick a real B1 well under that guess --
     // and buildStage2Plan refuses to run stage 2 when w*D/2 exceeds B1 (every
@@ -683,9 +704,20 @@ static int runMain(int argc, char** argv) {
              cfg.b1 ? "" : " (auto)", u32(cfg.pp1Seeds.size()));
     }
     if (anyRunStage2) {
-      printf("  B2 = %llu%s   pairing D=%u w=%u, %.3f muls/prime\n",
-             (unsigned long long) bounds.b2, cfg.b2 ? "" : " (auto)",
-             shape.d, shape.w, cost.mulsPerPrime);
+      if (runStage2 && wantPp1Stage2) {
+        // Two independently-chosen B2s now -- label which is which, same
+        // convention as the B1 split above. The pairing shape (D, w, table
+        // size) is a shared GPU-memory decision, so it gets its own line
+        // rather than repeating per method.
+        printf("  P-1: B2 = %llu%s\n", (unsigned long long) bounds.b2, cfg.b2 ? "" : " (auto)");
+        printf("  P+1: B2 = %llu%s\n", (unsigned long long) pp1Bounds.b2, cfg.b2 ? "" : " (auto)");
+        printf("  pairing D=%u w=%u, %.3f muls/prime\n", shape.d, shape.w, cost.mulsPerPrime);
+      } else {
+        const u64 b2Shown = runStage2 ? bounds.b2 : pp1Bounds.b2;
+        printf("  B2 = %llu%s   pairing D=%u w=%u, %.3f muls/prime\n",
+               (unsigned long long) b2Shown, cfg.b2 ? "" : " (auto)",
+               shape.d, shape.w, cost.mulsPerPrime);
+      }
       printf("  stage-2 table: %u buffers x %.1f MB = %.2f GB of GPU memory\n",
              stage2NumJ(shape.d, shape.w), double(residueBytes) / (1 << 20),
              double(stage2NumJ(shape.d, shape.w)) * double(residueBytes) / (1u << 30));
@@ -731,7 +763,7 @@ static int runMain(int argc, char** argv) {
                u32(cfg.pp1Seeds.size()), seed);
         PP1Result pr = runPP1Stage1(*gpu, cfg, pp1B1, seed, true);
         if (pr.interrupted) {
-          printf("\n  interrupted; P+1 progress for seed %u is checkpointed.\n", seed);
+          log("\n  interrupted; P+1 progress for seed %u is checkpointed.\n", seed);
           return 1;
         }
         if (pr.foundFactor) {
@@ -739,31 +771,31 @@ static int runMain(int argc, char** argv) {
           reportFactors(cfg, pr.factors, pp1B1, pp1B1, "P+1", seed);
           break;                      // no point trying further seeds
         }
-        printf("  P+1 seed %u: no factor\n", seed);
+        log("  P+1 seed %u: no factor\n", seed);
 
         // Only when stage 1 came up empty for this seed -- a factor already in
         // hand makes the second stage wasted work, exactly like P-1's own rule.
         if (wantPp1Stage2 && !gInterrupted.load()) {
           PP1Stage2Result s2 = runPP1Stage2(*gpu, cfg, pr.residue, seed, pp1B1,
-                                            bounds.b2, shape.d, shape.w, true);
+                                            pp1Bounds.b2, shape.d, shape.w, true);
           if (s2.interrupted) {
-            printf("\n  interrupted during P+1 stage 2 for seed %u; resume by running again.\n", seed);
+            log("\n  interrupted during P+1 stage 2 for seed %u; resume by running again.\n", seed);
             return 1;
           }
           if (s2.foundFactor) {
             anyFactor = true;
-            reportFactors(cfg, s2.factors, pp1B1, bounds.b2, "P+1", seed);
+            reportFactors(cfg, s2.factors, pp1B1, pp1Bounds.b2, "P+1", seed);
             break;
           }
-          printf("  P+1 seed %u: no factor in stage 2 either (B2=%llu)\n",
-                 seed, (unsigned long long) bounds.b2);
+          log("  P+1 seed %u: no factor in stage 2 either (B2=%llu)\n",
+              seed, (unsigned long long) pp1Bounds.b2);
         }
       }
       if (!anyFactor) {
-        writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? bounds.b2 : pp1B1, {}, 0);
+        writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? pp1Bounds.b2 : pp1B1, {}, 0);
       }
       if (!cfg.doPM1) {
-        printf("\n  appended to %s\n", cfg.resultsFile.c_str());
+        log("\n  appended to %s\n", cfg.resultsFile.c_str());
         return 0;
       }
     }
@@ -777,34 +809,34 @@ static int runMain(int argc, char** argv) {
     PM1Result r = runPM1Stage1(*gpu, cfg, b1, true);
 
     if (r.interrupted) {
-      printf("\n  interrupted before stage 1 completed; nothing written.\n");
+      log("\n  interrupted before stage 1 completed; nothing written.\n");
       return 1;
     }
 
     printf("\n");
     if (r.foundFactor) {
       if (r.factors.size() > 1) {
-        printf("  the gcd was a product of %zu factors (every factor with a\n"
-               "  B1-smooth k comes out of the same gcd):\n\n", r.factors.size());
+        log("  the gcd was a product of %zu factors (every factor with a\n"
+            "  B1-smooth k comes out of the same gcd):\n\n", r.factors.size());
       }
       for (const FoundFactor& ff : r.factors) {
         if (ff.prime && ff.dividesMp) {
-          printf("  *** M%u has a factor: %s ***\n", cfg.exponent, ff.value.dec().c_str());
-          printf("      %zu bits, k = %llu, verified 2^p == 1 (mod q)\n",
-                 ff.value.bits(), (unsigned long long) ff.k);
+          log("  *** M%u has a factor: %s ***\n", cfg.exponent, ff.value.dec().c_str());
+          log("      %zu bits, k = %llu, verified 2^p == 1 (mod q)\n",
+              ff.value.bits(), (unsigned long long) ff.k);
         } else if (ff.dividesMp) {
-          printf("  *** M%u has a COMPOSITE divisor: %s ***\n",
-                 cfg.exponent, ff.value.dec().c_str());
-          printf("      %zu bits; could not be split into primes -- its factors\n"
-                 "      have k larger than the trial-division limit\n", ff.value.bits());
+          log("  *** M%u has a COMPOSITE divisor: %s ***\n",
+              cfg.exponent, ff.value.dec().c_str());
+          log("      %zu bits; could not be split into primes -- its factors\n"
+              "      have k larger than the trial-division limit\n", ff.value.bits());
         } else {
-          printf("  !!! %s does NOT divide M%u -- this is a bug, please report\n",
-                 ff.value.dec().c_str(), cfg.exponent);
+          log("  !!! %s does NOT divide M%u -- this is a bug, please report\n",
+              ff.value.dec().c_str(), cfg.exponent);
         }
       }
     } else {
-      printf("  M%u: no factor found with B1 = %llu\n",
-             cfg.exponent, (unsigned long long) r.b1Used);
+      log("  M%u: no factor found with B1 = %llu\n",
+          cfg.exponent, (unsigned long long) r.b1Used);
     }
     // ONE result per job, not one per stage. If stage 2 is going to run, the
     // result is written after it with both bounds; emitting a stage-1-only "NF"
@@ -814,7 +846,7 @@ static int runMain(int argc, char** argv) {
     if (r.foundFactor || !runStage2) {
       writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, r.factors, 0);
     }
-    printf("  appended to %s\n", cfg.resultsFile.c_str());
+    log("  appended to %s\n", cfg.resultsFile.c_str());
 
     // ---- stage 2 ----------------------------------------------------------
     // Only when stage 1 came up empty. A factor already in hand makes the whole
@@ -828,25 +860,25 @@ static int runMain(int argc, char** argv) {
 
       printf("\n");
       if (s2.interrupted) {
-        printf("  interrupted during stage 2; resume by running again.\n");
+        log("  interrupted during stage 2; resume by running again.\n");
         return 1;
       }
       if (s2.foundFactor) {
         reportFactors(cfg, s2.factors, b1, bounds.b2, "P-1", 0);
       } else {
-        printf("  M%u: no factor found in stage 2 either (B1=%llu, B2=%llu)\n",
-               cfg.exponent, (unsigned long long) b1, (unsigned long long) bounds.b2);
+        log("  M%u: no factor found in stage 2 either (B1=%llu, B2=%llu)\n",
+            cfg.exponent, (unsigned long long) b1, (unsigned long long) bounds.b2);
         writeResultJson(cfg, "P-1", b1, bounds.b2, {}, 0);
       }
-      printf("  appended to %s\n", cfg.resultsFile.c_str());
+      log("  appended to %s\n", cfg.resultsFile.c_str());
     }
     return 0;
 
   } catch (const char* s) {
-    printf("\nFAILED: %s\n", s);
+    log("\nFAILED: %s\n", s);
     return 2;
   } catch (const std::exception& e) {
-    printf("\nFAILED: %s\n", e.what());
+    log("\nFAILED: %s\n", e.what());
     return 2;
   }
 }

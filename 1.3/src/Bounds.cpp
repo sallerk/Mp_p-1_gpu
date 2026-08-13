@@ -361,7 +361,7 @@ void pp1Prob(double exponent, u32 factoredTo, double b1, double b2,
   //
   // This is per single seed, conditioned on that seed already being in the
   // "genuine P+1" residue class (seed^2-4 a non-residue mod q) -- see
-  // choosePP1B1 for folding in the per-seed chance of that.
+  // choosePP1Bounds for folding in the per-seed chance of that.
   smoothProb(exponent, factoredTo, b1, b2, 1.0, p1, p2);
 }
 
@@ -379,8 +379,9 @@ std::string Bounds::describe(double exponent) const {
 
 namespace {
 
-// The B1 grid both chooseBounds and choosePP1B1 scan -- pure data generation,
-// shared so the two functions are always compared on the same candidates.
+// The B1 grid both chooseBounds and choosePP1Bounds scan -- pure data
+// generation, shared so the two functions are always compared on the same
+// candidates.
 std::vector<double> candidateB1s(u64 fixedB1) {
   std::vector<double> b1s;
   if (fixedB1) {
@@ -396,17 +397,19 @@ std::vector<double> candidateB1s(u64 fixedB1) {
   return b1s;
 }
 
+// B2 as a multiple of B1 rather than an absolute list, so the search stays
+// meaningful across exponent sizes. Ratio 1 means "no stage 2", which must
+// stay on the table: if stage 2 were ever a net loss the scan should say so.
+// Shared between chooseBounds and choosePP1Bounds for the same reason
+// candidateB1s is: the two are always compared on the same candidates.
+const double RATIOS[] = {1, 5, 10, 15, 20, 30, 40, 60, 80, 100, 150, 200, 300};
+
 } // namespace
 
 Bounds chooseBounds(double exponent, u32 factoredTo, double bias,
                     const CostModel& cost, u64 fixedB1, u64 fixedB2,
                     bool allowStage2) {
   const std::vector<double> b1s = candidateB1s(fixedB1);
-
-  // B2 as a multiple of B1 rather than an absolute list, so the search stays
-  // meaningful across exponent sizes. Ratio 1 means "no stage 2", which must
-  // stay on the table: if stage 2 were ever a net loss the scan should say so.
-  static const double RATIOS[] = {1, 5, 10, 15, 20, 30, 40, 60, 80, 100, 150, 200, 300};
 
   const double bonus = (bias - 1) * exponent;
 
@@ -480,9 +483,9 @@ Bounds chooseBounds(double exponent, u32 factoredTo, double bias,
   return best;
 }
 
-Bounds choosePP1B1(double exponent, u32 factoredTo, double bias,
-                   const CostModel& cost, u32 nSeeds, u64 sharedB2,
-                   u64 fixedB1) {
+Bounds choosePP1Bounds(double exponent, u32 factoredTo, double bias,
+                       const CostModel& cost, u32 nSeeds,
+                       u64 fixedB1, u64 fixedB2, bool allowStage2) {
   const std::vector<double> b1s = candidateB1s(fixedB1);
   const double bonus = (bias - 1) * exponent;
 
@@ -492,35 +495,45 @@ Bounds choosePP1B1(double exponent, u32 factoredTo, double bias,
   const double n = double(nSeeds);
   const double seedFactor = 1 - pow(0.5, n);
 
-  struct Candidate { double b1, p1, p2, work1, work2, expected; };
+  struct Candidate { double b1, b2, p1, p2, work1, work2, expected; };
   std::vector<Candidate> cands;
 
   for (double b1 : b1s) {
-    // B2/pairing shape are not chosen here -- P+1 has no stage-2 cost model
-    // of its own yet, so sharedB2 (already chosen for P-1) is fixed input.
-    const double b2 = (double(sharedB2) > b1) ? double(sharedB2) : b1;
-    const bool haveS2 = b2 > b1;
+    for (double r : RATIOS) {
+      if (!allowStage2 && r != 1) { break; }
+      double b2 = fixedB2 ? double(fixedB2) : b1 * r;
+      if (fixedB2 && r != RATIOS[0]) { break; }
+      if (b2 < b1) { b2 = b1; }
+      // Same cap chooseBounds applies -- stage 2's setup exponents are
+      // machine words, which bounds m*D and so B2.
+      if (b2 > 4e9) { continue; }
 
-    double p1raw = 0, p2raw = 0;
-    pp1Prob(exponent, factoredTo, b1, b2, p1raw, p2raw);
-    const double p1 = p1raw * seedFactor;
-    const double p2 = haveS2 ? p2raw * seedFactor : 0.0;
+      const bool haveS2 = b2 > b1;
 
-    // Every seed pays its own full ladder -- one squaring plus one multiply
-    // per bit, no fused-carry shortcut (Gpu.h) -- and its own gcd; a stage 2,
-    // if it runs, is also paid once per seed (runPP1Stage2 is called inside
-    // the per-seed loop in main.cpp).
-    const double iters1 = 1.4427 * b1;
-    const double work1 = n * (iters1 * 2.0 + cost.gcdIters);
-    const double work2 = haveS2
-        ? n * (nPrimesBetween(b1, b2) * cost.mulsPerPrime * cost.s2MulCost + cost.gcdIters)
-        : 0.0;
+      double p1raw = 0, p2raw = 0;
+      pp1Prob(exponent, factoredTo, b1, b2, p1raw, p2raw);
+      const double p1 = p1raw * seedFactor;
+      const double p2 = haveS2 ? p2raw * seedFactor : 0.0;
 
-    const double expected = work1
-                          + p2 * (work2 / 2)
-                          + (1 - p1 - p2) * (work2 + exponent + bonus);
+      // Every seed pays its own full ladder -- one squaring plus one
+      // multiply per bit, no fused-carry shortcut (Gpu.h) -- and its own
+      // gcd; a stage 2, if it runs, is also paid once per seed
+      // (runPP1Stage2 is called inside the per-seed loop in main.cpp).
+      // mulsPerPrime/s2MulCost are reused as-is from P-1's own measurement
+      // -- see choosePP1Bounds's own comment in Bounds.h for why that's
+      // valid (same pairing geometry, same modMul primitive either way).
+      const double iters1 = 1.4427 * b1;
+      const double work1 = n * (iters1 * 2.0 + cost.gcdIters);
+      const double work2 = haveS2
+          ? n * (nPrimesBetween(b1, b2) * cost.mulsPerPrime * cost.s2MulCost + cost.gcdIters)
+          : 0.0;
 
-    cands.push_back({b1, p1, p2, work1, work2, expected});
+      const double expected = work1
+                            + p2 * (work2 / 2)
+                            + (1 - p1 - p2) * (work2 + exponent + bonus);
+
+      cands.push_back({b1, haveS2 ? b2 : b1, p1, p2, work1, work2, expected});
+    }
   }
 
   Bounds best;
@@ -541,7 +554,7 @@ Bounds choosePP1B1(double exponent, u32 factoredTo, double bias,
   if (!pick) { pick = &cands[0]; }
 
   best.b1 = u64(pick->b1);
-  best.b2 = sharedB2;   // echo of the input, not chosen by this function
+  best.b2 = u64(pick->b2);
   best.probStage1 = pick->p1;
   best.probStage2 = pick->p2;
   best.workStage1 = pick->work1;
@@ -757,7 +770,7 @@ int runBoundsTests() {
            one.prob() * 100, two.prob() * 100);
   }
 
-  printf("\n  D. pp1Prob and choosePP1B1 (P+1's own B1 model)\n");
+  printf("\n  D. pp1Prob and choosePP1Bounds (P+1's own B1/B2 model)\n");
   {
     // Independent reference: same rho integration as pp1Prob, but the
     // accumulation done as a straight product of complements instead of
@@ -818,50 +831,96 @@ int runBoundsTests() {
     }
     bCheck(neverBigger, "pp1Prob(B1) <= pm1Prob(B1): P+1's smooth target is strictly harder");
 
-    // choosePP1B1's seed factor is exactly 1 - 0.5^n, at a B1 pinned so both
-    // sides are guaranteed to compare the same candidate.
+    // choosePP1Bounds's seed factor is exactly 1 - 0.5^n, at a B1 pinned (and
+    // stage 2 switched off) so both sides are guaranteed to compare the same
+    // candidate.
     bool seedOk = true;
     CostModel seedCost;
     seedCost.gcdIters = gcdIterCost(86.6e6);
     double rawP1 = 0, rawP2 = 0;
     pp1Prob(86.6e6, 76, 100000, 100000, rawP1, rawP2);
     for (u32 ns : {1u, 2u, 3u, 5u}) {
-      const Bounds b = choosePP1B1(86.6e6, 76, 1.0, seedCost, ns, 0, 100000);
+      const Bounds b = choosePP1Bounds(86.6e6, 76, 1.0, seedCost, ns, 100000, 0, false);
       const double want = rawP1 * (1 - pow(0.5, double(ns)));
       if (fabs(b.probStage1 - want) > 1e-9) { seedOk = false; }
     }
-    bCheck(seedOk, "choosePP1B1's seed factor is exactly 1 - 0.5^n");
+    bCheck(seedOk, "choosePP1Bounds's seed factor is exactly 1 - 0.5^n");
 
-    // work1/work2 scale linearly in nSeeds at a fixed, pinned B1 -- an
+    // work1/work2 scale linearly in nSeeds at a fixed, pinned (B1, B2) -- an
     // algebraic invariant of the cost formula, cheap to assert exactly.
     {
       CostModel cost;
       cost.gcdIters = gcdIterCost(86.6e6);
       cost.mulsPerPrime = 0.76;
-      const Bounds b3 = choosePP1B1(86.6e6, 76, 1.0, cost, 3, 60000000, 2000000);
-      const Bounds b6 = choosePP1B1(86.6e6, 76, 1.0, cost, 6, 60000000, 2000000);
+      const Bounds b3 = choosePP1Bounds(86.6e6, 76, 1.0, cost, 3, 2000000, 60000000);
+      const Bounds b6 = choosePP1Bounds(86.6e6, 76, 1.0, cost, 6, 2000000, 60000000);
       const bool ok1 = fabs(b6.workStage1 - 2 * b3.workStage1) < 1e-6;
       const bool ok2 = fabs(b6.workStage2 - 2 * b3.workStage2) < 1e-6;
-      bCheck(ok1, "choosePP1B1: work1 scales linearly in nSeeds");
-      bCheck(ok2, "choosePP1B1: work2 scales linearly in nSeeds");
+      bCheck(ok1, "choosePP1Bounds: work1 scales linearly in nSeeds");
+      bCheck(ok2, "choosePP1Bounds: work2 scales linearly in nSeeds");
       printf("     %s  work1(3)=%.0f work1(6)=%.0f   %s  work2(3)=%.0f work2(6)=%.0f\n",
              ok1 ? "PASS" : "FAIL", b3.workStage1, b6.workStage1,
              ok2 ? "PASS" : "FAIL", b3.workStage2, b6.workStage2);
     }
 
-    // The whole point of the todo item: at the same exponent/bias, P+1's own
-    // B1 should come out no larger than P-1's (typically much smaller). Check
-    // the DIRECTION, not an exact value -- the cost constants are estimates.
+    // Same rigor chooseBounds's own B2 choice already gets in section C:
+    // never worse than restricting to B2 == B1, and a genuine B2 >= B1 when
+    // stage 2 is allowed. The tolerance band itself is checked the same way
+    // too -- stays within its own limit, never yields less than the strict
+    // argmin.
+    {
+      CostModel cm;
+      cm.mulsPerPrime = 0.76;
+      cm.gcdIters = gcdIterCost(86.6e6);
+      cm.tolerance = 0;
+      const Bounds one = choosePP1Bounds(86.6e6, 76, 10.0, cm, 3, 0, 0, false);
+      const Bounds two = choosePP1Bounds(86.6e6, 76, 10.0, cm, 3);
+      bCheck(two.expectedCost <= one.expectedCost + 1e-9,
+             "choosePP1Bounds: two-stage scan is never worse than restricting to B2 == B1");
+      bCheck(two.b2 >= two.b1, "choosePP1Bounds: B2 >= B1");
+
+      CostModel banded = cm;
+      banded.tolerance = 0.05;
+      const Bounds bandedResult = choosePP1Bounds(86.6e6, 76, 10.0, banded, 3);
+      bCheck(bandedResult.expectedCost <= two.expectedCost * (1 + banded.tolerance) + 1e-9,
+             "choosePP1Bounds: banded choice stays within tolerance of the minimum");
+      bCheck(bandedResult.prob() >= two.prob() - 1e-12,
+             "choosePP1Bounds: banded choice never yields less than the strict argmin");
+      printf("     P+1 stage-1-only B1=%llu %.3f%%   with-stage-2 B1=%llu B2=%llu %.3f%%\n",
+             (unsigned long long) one.b1, one.prob() * 100,
+             (unsigned long long) two.b1, (unsigned long long) two.b2, two.prob() * 100);
+    }
+
+    // The whole point of the original todo item: at the same exponent/bias,
+    // P+1's own B1 should come out no larger than P-1's (typically much
+    // smaller), STAGE 1 ONLY -- comparing the pure smoothness economics
+    // without either method's B2 in play. Check the DIRECTION, not an exact
+    // value -- the cost constants are estimates.
     {
       CostModel cost;
       cost.gcdIters = gcdIterCost(86.6e6);
       cost.mulsPerPrime = 0.76;
       const Bounds pm1b = chooseBounds(86.6e6, 76, 1.0, cost, 0, 0, false);
-      const Bounds pp1b = choosePP1B1(86.6e6, 76, 1.0, cost, 3, 0);
+      const Bounds pp1b = choosePP1Bounds(86.6e6, 76, 1.0, cost, 3, 0, 0, false);
       bCheck(pp1b.b1 <= pm1b.b1,
-             "choosePP1B1 picks a B1 no larger than P-1's at the same exponent/bias");
+             "choosePP1Bounds picks a B1 no larger than P-1's at the same exponent/bias (stage 1 only)");
       printf("     P-1 B1=%llu   P+1 B1=%llu (3 seeds)\n",
              (unsigned long long) pm1b.b1, (unsigned long long) pp1b.b1);
+    }
+
+    // With BOTH methods free to choose their own B2 too (the real, default
+    // case), P+1 no longer inherits P-1's B2 -- printed as a data point, not
+    // asserted, since two independently-optimized (B1,B2) pairs don't carry
+    // as clean a directional guarantee as the stage-1-only comparison above.
+    {
+      CostModel cost;
+      cost.gcdIters = gcdIterCost(86.6e6);
+      cost.mulsPerPrime = 0.76;
+      const Bounds pm1b = chooseBounds(86.6e6, 76, 1.0, cost);
+      const Bounds pp1b = choosePP1Bounds(86.6e6, 76, 1.0, cost, 3);
+      printf("     with stage 2:  P-1 B1=%llu B2=%llu %.3f%%   P+1 B1=%llu B2=%llu %.3f%% (3 seeds)\n",
+             (unsigned long long) pm1b.b1, (unsigned long long) pm1b.b2, pm1b.prob() * 100,
+             (unsigned long long) pp1b.b1, (unsigned long long) pp1b.b2, pp1b.prob() * 100);
     }
   }
 

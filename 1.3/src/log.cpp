@@ -46,7 +46,16 @@ void log(const char *fmt, ...) {
   va_end(va);
   string_view s{logBuf};
 
-  if (logFile) { logFile.write(s); }
+  // stdout is already unbuffered at the CRT level (main.cpp's own
+  // setvbuf(..., _IONBF, ...), for the identical reason), but a file opened
+  // via File::openAppend is fully buffered by default -- File::write() is a
+  // raw fwrite() with no flush, built for high-throughput data (checkpoints)
+  // where flushing every call would be a real cost. Log lines are the
+  // opposite: low-frequency, and the entire point of writing them to a file
+  // is to survive a crash or a forced kill, which a full stdio buffer does
+  // not -- it only reaches disk on a clean exit. Flush explicitly here,
+  // where the cost is negligible.
+  if (logFile) { logFile.write(s); logFile.flush(); }
   stdoutFile.write(s);
 }
 

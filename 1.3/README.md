@@ -181,14 +181,18 @@ instead of, or alongside, P-1. P+1 finds a factor q of `M_p` when `q+1` is
 B1-smooth — a different target from P-1's `q-1`, so it catches factors P-1
 cannot, and vice versa, for the seeds tried (`pp1_seeds`, default `3, 5, 7`).
 
-P+1 has its own B1 model (`pp1Prob`/`choosePP1B1` in `src/Bounds.cpp`) — it
-used to silently borrow P-1's B1, which optimises for the wrong smoothness
-target and typically over-pays; now `b1 = auto` picks each method's B1
-independently. Stage 2 catches `q+1` that is B1-smooth apart from one prime
-in `(B1, B2]`, exactly like P-1's stage 2, but still uses P-1's `b2`,
-`stage2_d` and `stage2_w` (P+1 has no stage-2 cost/pairing-shape model of its
-own yet — see Scope below). `stages` still switches stage 2 off for both
-methods at once. Checkpointing and
+P+1 has its own B1 and B2 model (`pp1Prob`/`choosePP1Bounds` in
+`src/Bounds.cpp`) — both used to silently borrow P-1's own choice, which
+optimises for the wrong smoothness target and, for B2, could tie P+1's B1 to
+an inflated range it never asked for; now `b1 = auto` and `b2 = auto` pick
+each method's bounds independently. Stage 2 catches `q+1` that is B1-smooth
+apart from one prime in `(B1, B2]`, exactly like P-1's stage 2, and reuses
+P-1's own measured stage-2 cost constants (same pairing geometry, same
+underlying multiply — see the comment above `choosePP1Bounds` in
+`src/Bounds.h`), but still shares P-1's `stage2_d`/`stage2_w` pairing *shape*
+— a GPU-memory budget decision (one T-table sized for whichever method needs
+the smaller B1), not a cost-model gap. `stages` still switches stage 2 off
+for both methods at once. Checkpointing and
 interrupted-walk resume work the same way as P-1's, per seed:
 `pp1_<exponent>_b1_<B1>_s<seed>.save` (stage 1) and
 `pp1_<exponent>_s2_<B1>_<B2>_s<seed>.save` (stage 2). Raising B2 on a
@@ -217,9 +221,9 @@ exact CPU arithmetic and against known factors of real Mersenne numbers.
   automation — results are written for you to upload manually.
 - **P+1 is a secondary mode.** Its yield per unit work is well below P-1's, so
   P-1 is the default; run it in earnest only once P-1 has been tried.
-- **P+1 has its own B1 model, but still borrows P-1's B2 and pairing shape**
-  (`b2`, `stage2_d`, `stage2_w`) — P+1 has no stage-2 cost model of its own
-  yet.
+- **P+1 has its own B1 and B2 model now, but still shares P-1's pairing
+  shape** (`stage2_d`, `stage2_w`) — a GPU-memory budget decision (one
+  shared T-table) rather than a cost-model gap.
 - **No B2 extension for P+1.** P-1's stage 2 reuses a completed smaller-B2
   walk when you raise B2 (see Resuming above); P+1's does not yet — raising B2
   re-walks the whole range. The checkpoint format has room for it later.

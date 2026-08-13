@@ -70,9 +70,10 @@ including one with a different GPU vendor.
   [PRPLL / gpuowl](https://github.com/preda/gpuowl), which this is built on.
 - **P+1 is a secondary mode**, lower yield per unit of GPU time than P-1. It
   exists because no GIMPS *GPU* tool offers P+1 at all; run it in earnest only
-  once P-1 has been tried. It has its own B1 model, but still borrows P-1's B2
-  and pairing shape, and (unlike P-1) does not yet reuse a completed stage-2
-  walk when you raise B2.
+  once P-1 has been tried. It has its own B1 and B2 model now, but still
+  shares P-1's stage-2 pairing shape (a GPU-memory budget decision, not a cost
+  gap), and (unlike P-1) does not yet reuse a completed stage-2 walk when you
+  raise B2.
 - **Windows / MSVC only.** No Makefile, no Linux build, no CI.
 - **One exponent per run**, from `config.txt`. No worktodo queue, no PrimeNet
   automation — results are written for you to upload manually.

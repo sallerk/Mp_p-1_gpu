@@ -108,17 +108,21 @@ Bounds chooseBounds(double exponent, u32 factoredTo, double bias,
                     const CostModel& cost, u64 fixedB1 = 0, u64 fixedB2 = 0,
                     bool allowStage2 = true);
 
-// The B1 minimising expected total work across nSeeds independent P+1 seed
-// attempts, each paying its own full stage-1 ladder (and stage-2 walk, if
-// sharedB2 > the candidate b1) and gcd. B2/pairing shape are NOT chosen
-// here -- P+1 has no cost model of its own for stage 2 yet, so sharedB2
-// (already chosen by chooseBounds for P-1) is fixed input, mirroring how
-// chooseBounds itself accepts a fixedB2. Returns the existing Bounds struct
-// for symmetry with chooseBounds's result; its .b2 is an ECHO of sharedB2,
-// not something this function chose.
-Bounds choosePP1B1(double exponent, u32 factoredTo, double bias,
-                   const CostModel& cost, u32 nSeeds, u64 sharedB2,
-                   u64 fixedB1 = 0);
+// The (B1, B2) minimising expected total work across nSeeds independent P+1
+// seed attempts, each paying its own full stage-1 ladder, stage-2 walk (if
+// any), and gcd(s). Same cost/probability tradeoff chooseBounds uses for
+// P-1, with pp1Prob in place of pm1Prob and every work term scaled by
+// nSeeds -- reuses cost.mulsPerPrime/s2MulCost as-is rather than needing its
+// own measured constants, since Gpu::pp1Stage2 reuses Stage2Plan's (m,j)
+// pairing geometry and modMul-based accumulator recurrence completely
+// unchanged from P-1's own stage 2 (see the comment above Gpu::pp1Stage2).
+// fixedB2 pins a B2 the same way chooseBounds's own fixedB2 does;
+// allowStage2 = false restricts the scan to B2 == B1, the same meaning it
+// has for chooseBounds.
+Bounds choosePP1Bounds(double exponent, u32 factoredTo, double bias,
+                       const CostModel& cost, u32 nSeeds,
+                       u64 fixedB1 = 0, u64 fixedB2 = 0,
+                       bool allowStage2 = true);
 
 // There was a chooseB1() here carrying gpuowl's MERGED cost model, in which
 // stage-1 squarings are credited against the PRP test that follows because

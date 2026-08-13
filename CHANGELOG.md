@@ -12,9 +12,25 @@ here. `choosePP1B1()` picks the B1 minimising expected work across the
 configured seed list, folding in that each seed pays its own full ladder (one
 squaring plus one multiply per bit, no fused-carry shortcut) and its own gcd,
 and that only ~50% of seeds land in the residue class P+1's mechanism
-actually needs (`1 - 0.5^n` chance across n seeds). B2 and the pairing shape
-are still borrowed from P-1's own choice — P+1 has no cost model of its own
-for stage 2 yet.
+actually needs (`1 - 0.5^n` chance across n seeds).
+
+**P+1 now gets its own B2 too.** `choosePP1Bounds()` (renamed from
+`choosePP1B1`) chooses B1 and B2 jointly, the same tolerance-banded scan
+`chooseBounds` already runs for P-1, instead of taking P-1's B2 as fixed
+input. That coupling had a real effect: because P+1 had to walk a stage-2
+range sized for *P-1's* bounds, raising `bounds_tolerance` could push P+1's
+B1 up mainly to shrink an expensive borrowed-B2 tail it never asked for —
+not because P+1's own economics justified it (measured case: tolerance 0.3
+recommended P+1 spend 116.6% of a PRP test's worth of work for a 0.288%
+chance, a far worse trade than P-1's own 75.1%/4.25% at the same tolerance).
+The stage-2 *cost* constants (`mulsPerPrime`, `s2MulCost`) are still reused
+from P-1's own measurement rather than remeasured — `Gpu::pp1Stage2` reuses
+P-1's exact pairing geometry and `modMul`-based accumulator recurrence, so
+the same per-multiply cost applies regardless of which method is walking it
+(now checked live in `--selftest=pp1stage2`, mirroring the check M6b already
+does for P-1's own ratio). The stage-2 pairing *shape* (`stage2_d`,
+`stage2_w`, T-table sizing) also stays shared between both methods — a
+GPU-memory budget decision, not a cost-model gap.
 
 **This is a real behavioural change, not just a bugfix**: P+1's auto-chosen
 B1 is now typically much smaller than before (the quantity that has to be
@@ -58,6 +74,19 @@ warning about broken entries no longer blames "the kernel-option search" by
 default or points at the wrong file to delete -- and no longer conflates
 shapes that are structurally too imprecise for the exponent (an expected,
 harmless mismatch) with shapes that actually compute wrong results.
+
+**Runs now leave a log file.** `log()` (used throughout `--tune` and, as of
+this release, every job's outcome) has always written to stdout only:
+`initLog()` — the call that opens its file half — was declared and defined
+but never actually invoked anywhere in this program, upstream included, so
+nothing was ever recorded once a console window closed. `initLog()` is now
+called at startup, appending to `Mp_p-1_gpu.log`, and every failure/outcome
+message (factor found, no factor, interrupted, and the top-level `FAILED:
+...` a crash exits with) goes through `log()` rather than a plain `printf()`
+so it lands there too — routine per-iteration progress stays console-only.
+The file is explicitly flushed after every write, unlike the buffered
+default a `FILE*` gets from `fopen`: the whole point of the file is
+surviving a crash or a forced kill, which an unflushed buffer would not.
 
 ## 1.2
 

@@ -4,11 +4,13 @@
 // testBigInt.cpp because it needs no GPU.
 
 #include "BigInt.h"
+#include "Bounds.h"
 #include "Config.h"
 #include "FFTConfig.h"
 #include "Gcd.h"
 #include "Gpu.h"
 #include "GpuCommon.h"
+#include "log.h"
 #include "PM1.h"
 #include "Queue.h"
 #include "Stage2Plan.h"
@@ -472,9 +474,9 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
     }
     const size_t nTuned = candidates.size();
     if (!nTuned) {
-      printf("  no tune.txt entry covers M%u.\n"
-             "  Consider:  Mp_p-1_gpu.exe --tune quick=10,minexp=%u,maxexp=%u\n",
-             E, E, E);
+      log("  no tune.txt entry covers M%u.\n"
+          "  Consider:  Mp_p-1_gpu.exe --tune quick=10,minexp=%u,maxexp=%u\n",
+          E, E, E);
     }
 
     // 2. An INDEPENDENT fallback. Note FFTConfig::bestFit() also reads
@@ -536,8 +538,8 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
     if (i + 1 < tries) { printf("  trying the next candidate\n"); }
   }
 
-  printf("\n  No FFT config passed verification for M%u.\n"
-         "  Run --tune, or pin a known-good one with -fft <spec>.\n", E);
+  log("\n  No FFT config passed verification for M%u.\n"
+      "  Run --tune, or pin a known-good one with -fft <spec>.\n", E);
   throw "no usable FFT config";
 }
 
@@ -1239,6 +1241,36 @@ int runPp1Stage2Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
              (unsigned long long) residue(correct),
              identical ? "identical, as measured during development"
                        : "DIFFER -- the precaution turns out to matter after all, investigate before removing it");
+
+      // choosePP1Bounds (Bounds.cpp) reuses cost.mulsPerPrime/s2MulCost --
+      // measured for P-1's own stage2 -- on the grounds that pp1Stage2 reuses
+      // the identical (m,j) pairing geometry and modMul-based accumulator
+      // recurrence (see the comment above Gpu::pp1Stage2). Measured the same
+      // way M6b measures P-1's own ratio: informational, not asserted, since
+      // hardware/driver variance makes an exact match unrealistic to demand --
+      // this is evidence the reuse is reasonable, not a correctness gate.
+      const Stage2Plan small = buildStage2Plan(1000000, 1010000, 210, 1);
+      const Stage2Plan big   = buildStage2Plan(1000000, 1100000, 210, 1);
+      auto mulsOf = [](const Stage2Plan& q2) { return q2.nSlots + 2 * (q2.nBlocks() - 1); };
+
+      Timer pt;
+      gpu->pp1Stage2(y1, small, 0, never);
+      const double ptSmall = pt.at();
+      gpu->pp1Stage2(y1, big, 0, never);
+      const double ptBig = pt.at();
+      const double usPerMul = (ptBig - ptSmall) * 1e6 / double(mulsOf(big) - mulsOf(small));
+
+      const u32 nSq = 2000;
+      Timer ts;
+      gpu->expExp2(makeWords(p, 3), nSq);
+      const double usPerSquaring = ts.at() * 1e6 / nSq;
+
+      printf("     %.0f us per P+1 accumulator multiply (marginal, %llu vs %llu muls)\n",
+             usPerMul, (unsigned long long) mulsOf(big), (unsigned long long) mulsOf(small));
+      printf("     %.0f us per stage-1 squaring on the same transform\n", usPerSquaring);
+      printf("     ratio %.2fx (P-1's own measured ratio is %.2fx, from M6b) -- reusing\n"
+             "     P-1's s2MulCost for P+1's own bounds model\n",
+             usPerMul / usPerSquaring, CostModel{}.s2MulCost);
     } catch (const char* s) {
       printf("     SKIP (%s)\n", s);
     } catch (const std::exception& e) {

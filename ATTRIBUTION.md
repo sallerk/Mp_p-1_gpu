@@ -47,7 +47,7 @@ Written for this program, and GPLv3 along with the rest:
 | P-1 / P+1 driver | `PM1.{h,cpp}` — stage 1, P+1 Lucas ladder, stage-2 driver |
 | Stage-2 pairing | `Stage2Plan.{h,cpp}` — Montgomery pairing with a matching window |
 | Checkpointing | `Save.{h,cpp}`, `Stage2Save.{h,cpp}`, `Pp1Stage2Save.{h,cpp}` |
-| Bounds | the cost model and `chooseBounds` in `Bounds.{h,cpp}`; `pp1Prob` and `choosePP1B1` (P+1's own B1 model — no upstream P+1 probability tool exists to port from, unlike `pm1Prob`) |
+| Bounds | the cost model and `chooseBounds` in `Bounds.{h,cpp}`; `pp1Prob` and `choosePP1Bounds` (P+1's own B1/B2 model — no upstream P+1 probability tool exists to port from, unlike `pm1Prob`) |
 | Config and tests | `Config.{h,cpp}`, `Selftest.cpp`, `testBigInt.cpp` |
 | Build | `build.bat`, `tools/` |
 | Stage-2 kernels | `subWords` in `src/cl/etc.cl` |
