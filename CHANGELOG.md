@@ -88,6 +88,22 @@ The file is explicitly flushed after every write, unlike the buffered
 default a `FILE*` gets from `fopen`: the whole point of the file is
 surviving a crash or a forced kill, which an unflushed buffer would not.
 
+**P+1 stage 2 now leaves a completed checkpoint, like P-1's already did.**
+Found by re-running an already-finished exponent: P+1's stage 2 deleted its
+checkpoint the moment it finished, so a later run at the identical bounds had
+nothing to resume from and re-walked the whole `(B1, B2]` range from scratch
+every time -- P+1's own stage 1 (and P-1's stage 1 and stage 2, since the 1.1
+B2-extension work) already skipped straight to the gcd in this situation,
+so this was a real inconsistency, not by design. `Pp1Stage2Save.h`'s
+`complete` field already existed for this (kept for schema parity when B2
+extension was scoped out of 1.2) but nothing ever set it. `runPP1Stage2` now
+writes a completed record instead of deleting the checkpoint, and checks for
+one before building a plan at all. This is a narrower fix than full B2
+extension (seeding a *larger* B2's walk from a completed *smaller* one,
+still out of scope -- see `Pp1Stage2Save.h`): only the exact-match case,
+re-running the same `(exponent, b1, b2, seed)`, is affected. Raising B2 on a
+finished P+1 stage 2 still re-walks the whole range.
+
 ## 1.2
 
 **P+1 stage 2.** P+1 could only find a factor q whose q+1 was entirely

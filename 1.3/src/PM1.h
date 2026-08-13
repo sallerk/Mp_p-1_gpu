@@ -110,10 +110,12 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
 // P+1 stage 2, run on the V_E residue stage 1 left behind. See Gpu.h
 // (Gpu::pp1Stage2) for the pairing derivation; this is the driver around it --
 // checkpointing, progress, gcd and factor splitting, structured the same way
-// runPM1Stage2 is. Unlike P-1's driver, this does not search for a completed
-// smaller-B2 checkpoint to extend: B2 extension for P+1 is out of scope for
-// this version (see Pp1Stage2Save.h), so only an interrupted-walk resume is
-// supported.
+// runPM1Stage2 is. An identical re-run (same exponent, b1, b2, seed) reuses a
+// completed checkpoint and skips straight to the gcd, the same as P-1's own
+// stage 2. Unlike P-1's driver, this does not search for a completed
+// SMALLER-B2 checkpoint to extend into a wider walk: that B2-extension case is
+// out of scope for this version (see Pp1Stage2Save.h) -- only the exact-match
+// and interrupted-walk-resume cases are handled here.
 struct PP1Stage2Result {
   bool foundFactor = false;
   bool interrupted = false;
@@ -124,6 +126,7 @@ struct PP1Stage2Result {
   double gcdSecs = 0;
   u64 muls = 0;
   u64 accRes64 = 0;         // low 64 bits of the accumulated product
+  bool reusedComplete = false;  // (b1, b2] was already finished; no walk at all
   Nat gcdValue;
   std::vector<FoundFactor> factors;
 };

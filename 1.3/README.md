@@ -219,6 +219,11 @@ exact CPU arithmetic and against known factors of real Mersenne numbers.
 - **Windows / MSVC only.** No Makefile, no Linux build, no CI.
 - **One exponent per run**, from `config.txt`. No worktodo queue, no PrimeNet
   automation — results are written for you to upload manually.
+- **Minimum exponent is 786613.** Every FFT shape needs at least 3 bits/word
+  (`FFTShape::minBpw()`); the smallest shape in the catalog is 256x256x2
+  (262144 words), so nothing below this exponent has any usable shape at
+  all — `--bounds`, `--tune`, and a real run all just fail with "no FFT fits
+  this exponent".
 - **P+1 is a secondary mode.** Its yield per unit work is well below P-1's, so
   P-1 is the default; run it in earnest only once P-1 has been tried.
 - **P+1 has its own B1 and B2 model now, but still shares P-1's pairing
@@ -226,7 +231,11 @@ exact CPU arithmetic and against known factors of real Mersenne numbers.
   shared T-table) rather than a cost-model gap.
 - **No B2 extension for P+1.** P-1's stage 2 reuses a completed smaller-B2
   walk when you raise B2 (see Resuming above); P+1's does not yet — raising B2
-  re-walks the whole range. The checkpoint format has room for it later.
+  re-walks the whole range from B1 rather than only the new part. An
+  identical re-run at the *same* B2 is not affected by this — like P-1's, a
+  completed P+1 stage 2 leaves its accumulator behind and a later run at the
+  same bounds skips straight to the gcd. The checkpoint format has room for
+  true extension later.
 - **Bound selection ignores work already done.** Raising B2 on a finished stage 2
   is cheap for P-1 (not yet for P+1, per above), but `auto` still picks bounds
   as though nothing had been computed yet either way. Set `b1` and `b2`

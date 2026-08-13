@@ -705,15 +705,6 @@ PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
   // it belongs to -- P+1's analogue of P-1's xRes64.
   const u64 yRes64 = residue(y1);
 
-  const Stage2Plan plan = buildStage2Plan(b1, b2, d, w);
-  const u64 total = plan.nSlots + 2 * (plan.nBlocks() - 1);
-
-  printf("  [%s stage 2 GPU] %s\n", ph(4), plan.describe().c_str());
-  printf("  [%s stage 2 GPU] %llu primes in (%llu, %llu], %zu T-buffers\n", ph(4),
-         (unsigned long long) plan.nPrimes, (unsigned long long) b1,
-         (unsigned long long) b2, plan.jset.size());
-  fflush(stdout);
-
   const string savePath = cfg.checkpointFile.empty()
       ? defaultPp1Stage2Path(cfg.exponent, b1, b2, seed)
       : cfg.checkpointFile + ".pp1s2";
@@ -727,101 +718,154 @@ PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
   want.seed = seed;
   want.yRes64 = yRes64;
 
-  Gpu::Stage2Pos resumePos;
+  // ---- already complete? --------------------------------------------------
+  // A prior run of this exact (b1, b2] for this seed left a COMPLETED record
+  // behind rather than deleting it (see below) -- the same bargain P-1's own
+  // stage 2 makes. Re-running the identical bounds, the ordinary case of
+  // re-launching on the same exponent, should not re-walk it: check this
+  // before building the plan at all, since sieving it is the wasted work.
+  bool alreadyComplete = false;
   bool haveResume = false;
+  Gpu::Stage2Pos resumePos;
+  Words completedAcc;
+
   if (cfg.checkpoint) {
     Pp1Stage2State got;
     string err;
     if (loadPp1Stage2(savePath, want, got, err)) {
-      resumePos.m = got.m;
-      resumePos.jIdx = got.jIdx;
-      resumePos.done = got.done;
-      resumePos.acc = std::move(got.acc);
-      resumePos.a = std::move(got.a);
-      resumePos.s = std::move(got.s);
-      haveResume = true;
-      printf("  [%s stage 2 GPU] resuming from %s at %.2f%% (block %llu of %llu)\n",
-             ph(4), savePath.c_str(), total ? 100.0 * double(resumePos.done) / double(total) : 0.0,
-             (unsigned long long) (resumePos.m - plan.mFirst),
-             (unsigned long long) plan.nBlocks());
+      if (got.complete) {
+        alreadyComplete = true;
+        completedAcc = std::move(got.acc);
+        printf("  [%s stage 2 GPU] already complete in %s -- skipping to the gcd\n",
+               ph(4), savePath.c_str());
+      } else {
+        resumePos.m = got.m;
+        resumePos.jIdx = got.jIdx;
+        resumePos.done = got.done;
+        resumePos.acc = std::move(got.acc);
+        resumePos.a = std::move(got.a);
+        resumePos.s = std::move(got.s);
+        haveResume = true;
+      }
     } else if (err != "no stage-2 checkpoint") {
       printf("  [%s stage 2 GPU] ignoring checkpoint: %s\n", ph(4), err.c_str());
     }
   }
+  res.reusedComplete = alreadyComplete;
 
-  Timer timer;
-  Timer report;
-  double lastAt = -1e9;
-  const u64 doneAtStart = haveResume ? resumePos.done : 0;
-  bool stopped = false;
+  Words accWords;
 
-  auto progress = [&](u64 done, u64 tot) {
-    if (gInterrupted.load()) { stopped = true; return false; }
-    if (!showProgress || !tot) { return true; }
-    const double el = report.at();
-    const u64 didHere = done > doneAtStart ? done - doneAtStart : 0;
-    const double rate = el > 0 ? double(didHere) / el : 0;
-    const double eta = rate > 0 ? double(tot - done) / rate : 0;
-    if (stdoutIsTerminal()) {
-      printf("\r  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s   ",
-             ph(4), 100.0 * double(done) / double(tot),
-             (unsigned long long) done, (unsigned long long) tot,
-             rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
-      fflush(stdout);
-    } else if (el - lastAt >= 60.0 || done == tot) {
-      lastAt = el;
-      printf("  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s\n",
-             ph(4), 100.0 * double(done) / double(tot),
-             (unsigned long long) done, (unsigned long long) tot,
-             rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
-      fflush(stdout);
+  if (alreadyComplete) {
+    accWords = std::move(completedAcc);
+  } else {
+    const Stage2Plan plan = buildStage2Plan(b1, b2, d, w);
+    const u64 total = plan.nSlots + 2 * (plan.nBlocks() - 1);
+
+    printf("  [%s stage 2 GPU] %s\n", ph(4), plan.describe().c_str());
+    printf("  [%s stage 2 GPU] %llu primes in (%llu, %llu], %zu T-buffers\n", ph(4),
+           (unsigned long long) plan.nPrimes, (unsigned long long) b1,
+           (unsigned long long) b2, plan.jset.size());
+    fflush(stdout);
+
+    if (haveResume) {
+      printf("  [%s stage 2 GPU] resuming from %s at %.2f%% (block %llu of %llu)\n",
+             ph(4), savePath.c_str(), total ? 100.0 * double(resumePos.done) / double(total) : 0.0,
+             (unsigned long long) (resumePos.m - plan.mFirst),
+             (unsigned long long) plan.nBlocks());
     }
-    return true;
-  };
 
-  u32 saveEvery = 0;
-  if (cfg.checkpoint && cfg.checkpointSeconds) {
-    const double usPerMul = 2500.0;
-    saveEvery = u32(std::clamp(double(cfg.checkpointSeconds) * 1e6 / usPerMul, 200.0, 200000.0));
-  }
+    Timer timer;
+    Timer report;
+    double lastAt = -1e9;
+    const u64 doneAtStart = haveResume ? resumePos.done : 0;
+    bool stopped = false;
 
-  auto save = [&](const Gpu::Stage2Pos& p) {
-    Pp1Stage2State st = want;
-    st.m = p.m;
-    st.jIdx = p.jIdx;
-    st.done = p.done;
-    st.acc = p.acc;
-    st.a = p.a;
-    st.s = p.s;
-    string err;
-    if (!savePp1Stage2(savePath, st, err)) {
-      printf("\n  WARNING: could not write P+1 stage-2 checkpoint: %s\n", err.c_str());
+    auto progress = [&](u64 done, u64 tot) {
+      if (gInterrupted.load()) { stopped = true; return false; }
+      if (!showProgress || !tot) { return true; }
+      const double el = report.at();
+      const u64 didHere = done > doneAtStart ? done - doneAtStart : 0;
+      const double rate = el > 0 ? double(didHere) / el : 0;
+      const double eta = rate > 0 ? double(tot - done) / rate : 0;
+      if (stdoutIsTerminal()) {
+        printf("\r  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s   ",
+               ph(4), 100.0 * double(done) / double(tot),
+               (unsigned long long) done, (unsigned long long) tot,
+               rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
+        fflush(stdout);
+      } else if (el - lastAt >= 60.0 || done == tot) {
+        lastAt = el;
+        printf("  [%s stage 2 GPU] %6.2f%%  %llu/%llu muls (%.0f/s)  elapsed %s  ETA %s\n",
+               ph(4), 100.0 * double(done) / double(tot),
+               (unsigned long long) done, (unsigned long long) tot,
+               rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
+        fflush(stdout);
+      }
+      return true;
+    };
+
+    u32 saveEvery = 0;
+    if (cfg.checkpoint && cfg.checkpointSeconds) {
+      const double usPerMul = 2500.0;
+      saveEvery = u32(std::clamp(double(cfg.checkpointSeconds) * 1e6 / usPerMul, 200.0, 200000.0));
     }
-  };
 
-  Gpu::Stage2Pos stoppedAt;
-  const Words accWords =
-      gpu.pp1Stage2(y1, plan, cfg.reportEvery ? cfg.reportEvery : 1000, progress,
-                    nullptr, false, haveResume ? &resumePos : nullptr,
-                    saveEvery, cfg.checkpoint ? save : std::function<void(const Gpu::Stage2Pos&)>{},
-                    &stoppedAt);
+    auto save = [&](const Gpu::Stage2Pos& p) {
+      Pp1Stage2State st = want;
+      st.m = p.m;
+      st.jIdx = p.jIdx;
+      st.done = p.done;
+      st.acc = p.acc;
+      st.a = p.a;
+      st.s = p.s;
+      string err;
+      if (!savePp1Stage2(savePath, st, err)) {
+        printf("\n  WARNING: could not write P+1 stage-2 checkpoint: %s\n", err.c_str());
+      }
+    };
 
-  if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 110, ""); }
-  res.stage2Secs = timer.at();
-  res.muls = total;
+    Gpu::Stage2Pos stoppedAt;
+    accWords =
+        gpu.pp1Stage2(y1, plan, cfg.reportEvery ? cfg.reportEvery : 1000, progress,
+                      nullptr, false, haveResume ? &resumePos : nullptr,
+                      saveEvery, cfg.checkpoint ? save : std::function<void(const Gpu::Stage2Pos&)>{},
+                      &stoppedAt);
 
-  if (stopped) {
-    if (cfg.checkpoint && !stoppedAt.acc.empty()) { save(stoppedAt); }
-    res.interrupted = true;
-    printf("  [%s stage 2 GPU] interrupted; progress saved to %s\n", ph(4), savePath.c_str());
-    return res;
+    if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 110, ""); }
+    res.stage2Secs = timer.at();
+    res.muls = total;
+
+    if (stopped) {
+      if (cfg.checkpoint && !stoppedAt.acc.empty()) { save(stoppedAt); }
+      res.interrupted = true;
+      printf("  [%s stage 2 GPU] interrupted; progress saved to %s\n", ph(4), savePath.c_str());
+      return res;
+    }
+
+    // The walk is over: replace the resume point with a COMPLETED record --
+    // the same bargain P-1's own stage 2 makes -- so a later identical run
+    // skips straight to the gcd above instead of re-walking (b1, b2].
+    if (cfg.checkpoint) {
+      Pp1Stage2State st = want;
+      st.complete = true;
+      st.m = plan.mLast + 1;
+      st.jIdx = 0;
+      st.done = total;
+      st.acc = accWords;
+      string err;
+      if (!savePp1Stage2(savePath, st, err)) {
+        printf("  WARNING: could not record P+1 stage 2 as complete: %s\n", err.c_str());
+      }
+    }
+
+    res.accRes64 = residue(accWords);
+    printf("  [%s stage 2 GPU] done in %s (%.0f us/mul), acc res64 %016llx\n", ph(4),
+           fmtDuration(res.stage2Secs).c_str(),
+           total ? res.stage2Secs * 1e6 / double(total) : 0.0,
+           (unsigned long long) res.accRes64);
   }
 
   res.accRes64 = residue(accWords);
-  printf("  [%s stage 2 GPU] done in %s (%.0f us/mul), acc res64 %016llx\n", ph(4),
-         fmtDuration(res.stage2Secs).c_str(),
-         total ? res.stage2Secs * 1e6 / double(total) : 0.0,
-         (unsigned long long) res.accRes64);
 
   const Nat Mp = mersenne(cfg.exponent);
   Nat acc = fromWords(accWords);
@@ -839,7 +883,9 @@ PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
     printf("%zu found in %s\n", res.factors.size(), fmtDuration(splitTimer.at()).c_str());
   }
 
-  if (cfg.checkpoint) { std::error_code ec; filesystem::remove(savePath, ec); }
+  // The checkpoint is deliberately NOT deleted here -- it now holds a
+  // completed record, which is what lets a later identical run skip the walk
+  // entirely instead of always starting stage 2 over from scratch.
   return res;
 }
 
