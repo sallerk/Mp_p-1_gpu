@@ -51,6 +51,14 @@ failures. `-h`'s help text was also corrected to match: two working
 never mentioned P+1 at all, and the `noconfig`/`--bench`/`minexp=`/`maxexp=`
 descriptions no longer matched current behaviour.
 
+The message `--tune` prints after finishing (`fft = auto` already picks and
+verifies the same recommended entry automatically, so pinning it is optional,
+not required) now says so instead of reading like an instruction, and its
+warning about broken entries no longer blames "the kernel-option search" by
+default or points at the wrong file to delete -- and no longer conflates
+shapes that are structurally too imprecise for the exponent (an expected,
+harmless mismatch) with shapes that actually compute wrong results.
+
 ## 1.2
 
 **P+1 stage 2.** P+1 could only find a factor q whose q+1 was entirely

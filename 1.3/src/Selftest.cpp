@@ -349,7 +349,13 @@ void recommendFFT(GpuCommon shared, Queue* q, u32 E) {
   int usable = 0, broken = 0;
 
   for (const TuneEntry& e : entries) {
+    // maxExp() alone is only an upper bound -- a transform can equally be too
+    // LARGE for this exponent (too few bits/word), which throws rather than
+    // mis-computing. Skip those here too (chooseVerifiedFFT's own `usable`
+    // applies the same minBpw check) so this report only verifies genuinely
+    // plausible candidates instead of ones known in advance to be unusable.
     if (E > e.fft.maxExp()) { continue; }        // cannot hold this exponent
+    if (double(E) / double(e.fft.size()) < e.fft.minBpw()) { continue; }  // too few bits/word
     printf("  %-22s %8.1f us/it ... ", e.fft.spec().c_str(), e.cost);
     fflush(stdout);
     if (verifyOne(shared, q, E, e.fft, nullptr)) {
@@ -364,17 +370,21 @@ void recommendFFT(GpuCommon shared, Queue* q, u32 E) {
 
   printf("\n");
   if (!bestSpec.empty()) {
-    printf("  Recommended -- put this line in config.txt:\n\n");
-    printf("      fft = %s\n\n", bestSpec.c_str());
-    printf("  (%.1f us/it, verified correct at M%u.)\n", bestCost, E);
+    printf("  Verified: fft = %s (%.1f us/it, correct at M%u).\n",
+           bestSpec.c_str(), bestCost, E);
+    printf("  fft = auto (config.txt's default) already picks and caches this same\n"
+           "  entry automatically -- pin it explicitly only to skip that one-time\n"
+           "  re-verify:\n\n      fft = %s\n\n", bestSpec.c_str());
   }
   if (broken) {
-    printf("\n  WARNING: %d of %d usable entries compute WRONG results.\n",
-           broken, usable + broken);
-    printf("  That normally means the kernel-option search ran on a shape that\n"
-           "  was already failing, so it picked options out of noise and those\n"
-           "  options then corrupted the timings. Delete Mp_p-1_gpu-tune-config.txt\n"
-           "  and re-run:  Mp_p-1_gpu.exe --tune noconfig\n");
+    printf("\n  Note: %d of %d entries large enough for M%u compute WRONG results on\n"
+           "  this hardware. That's usually just a config OpenCL mis-compiles here --\n"
+           "  no action needed: this check and the automatic fft = auto path both skip\n"
+           "  broken entries and use the next working one, same as just happened above.\n"
+           "  To stop tune.txt listing them, delete tune.txt (not\n"
+           "  Mp_p-1_gpu-tune-config.txt, which holds unrelated kernel options) and\n"
+           "  re-run --tune.\n",
+           broken, usable + broken, E);
   }
   if (!usable) {
     printf("\n  NOTHING in tune.txt is usable. Do not set fft= from it.\n"
