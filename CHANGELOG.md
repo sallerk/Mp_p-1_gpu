@@ -32,6 +32,25 @@ separator. P-1 and P+1 now get their own labelled `estimated ... success`
 lines, and the P-1 section gets a `P-1 attempt` header (matching P+1's own
 `P+1 attempt N of M`) with a blank line before it when both methods run.
 
+**`--tune` fixes and visibility**, found by running it for real against a
+small (~3.3M) exponent: `tune.txt` could end up silently empty for any
+exponent small enough that the smallest available FFT shape already exceeded
+the size ceiling `--tune` uses to skip needlessly-oversized candidates --
+that ceiling now retries once, bounded to 10x, if the strict pass finds
+nothing. Separately, `TAIL_TRIGS32`/`TABMUL_CHAIN32` tested against an FP32
+NTT shape that never went through the same broken-baseline check the main
+shape gets, so on hardware where that shape fails, every value came back an
+identical failure and "Best ..." was picked from noise -- it now gets the
+same verify-and-substitute treatment. `--tune` also now prints `[i/N]
+Finding best PARAM` progress through its ~20 kernel-option searches and
+`[shape i/N]` through its FFT-shape sweep, and every logged timing shows
+`FAILED (wrong residue -- not used)` inline instead of a bare sentinel
+number, with a `WARNING` line if an entire parameter's search came back all
+failures. `-h`'s help text was also corrected to match: two working
+`--selftest=` modes (`extend`, `pp1`) were missing from its list, STAGES
+never mentioned P+1 at all, and the `noconfig`/`--bench`/`minexp=`/`maxexp=`
+descriptions no longer matched current behaviour.
+
 ## 1.2
 
 **P+1 stage 2.** P+1 could only find a factor q whose q+1 was entirely
