@@ -4,10 +4,11 @@ Mp_p-1_gpu is licensed under the **GNU General Public License, version 3**
 (see [LICENSE](LICENSE)), because it is a derivative work of a GPLv3 project.
 
 This applies to every release: the repository is organized as one subfolder per
-version (`1.0/`, `1.1/`, `1.2/`, ...), and the file paths below are relative to
-each version's own `src/` — e.g. `Gpu.{h,cpp}` means `1.2/src/Gpu.{h,cpp}` in
-the current release. The provenance split (what is upstream vs. original) does
-not change between versions; only the code within each file does.
+version (`1.0/`, `1.1/`, `1.2/`, `1.3/`, ...), and the file paths below are
+relative to each version's own `src/` — e.g. `Gpu.{h,cpp}` means
+`1.3/src/Gpu.{h,cpp}` in the current release. The provenance split (what is
+upstream vs. original) does not change between versions; only the code within
+each file does.
 
 ## Upstream
 
@@ -46,7 +47,7 @@ Written for this program, and GPLv3 along with the rest:
 | P-1 / P+1 driver | `PM1.{h,cpp}` — stage 1, P+1 Lucas ladder, stage-2 driver |
 | Stage-2 pairing | `Stage2Plan.{h,cpp}` — Montgomery pairing with a matching window |
 | Checkpointing | `Save.{h,cpp}`, `Stage2Save.{h,cpp}`, `Pp1Stage2Save.{h,cpp}` |
-| Bounds | the cost model and `chooseBounds` in `Bounds.{h,cpp}` |
+| Bounds | the cost model and `chooseBounds` in `Bounds.{h,cpp}`; `pp1Prob` and `choosePP1B1` (P+1's own B1 model — no upstream P+1 probability tool exists to port from, unlike `pm1Prob`) |
 | Config and tests | `Config.{h,cpp}`, `Selftest.cpp`, `testBigInt.cpp` |
 | Build | `build.bat`, `tools/` |
 | Stage-2 kernels | `subWords` in `src/cl/etc.cl` |

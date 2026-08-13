@@ -17,7 +17,8 @@ it. The only requirement is `OpenCL.dll`, which ships with your GPU driver.
 
 | version | download | |
 |---|---|---|
-| **1.2** | [**Mp_p-1_gpu-1.2-win64.zip**](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.2/Mp_p-1_gpu-1.2-win64.zip) | current. P+1 now has stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Start here — see [1.2/README.md](1.2/README.md). |
+| **1.3** | [**Mp_p-1_gpu-1.3-win64.zip**](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.3/Mp_p-1_gpu-1.3-win64.zip) | current. P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. Start here — see [1.3/README.md](1.3/README.md). |
+| 1.2 | [Mp_p-1_gpu-1.2-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.2/Mp_p-1_gpu-1.2-win64.zip) | P+1 gained stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Kept as-is. |
 | 1.1 | [Mp_p-1_gpu-1.1-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.1/Mp_p-1_gpu-1.1-win64.zip) | raising B2 on a finished P-1 stage 2 reuses the completed accumulator and walks only the new range, instead of starting over. Kept as-is. |
 | 1.0 | [Mp_p-1_gpu-1.0-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.0/Mp_p-1_gpu-1.0-win64.zip) | first release. GPU P-1 with both stages, P+1 stage 1, automatic bound selection, checkpoint/resume, PrimeNet-format JSON results. Kept as-is. |
 
@@ -43,11 +44,11 @@ inline. Or build from source — Visual Studio 2019/2022 with "Desktop
 development with C++", nothing else:
 
 ```bash
-cd 1.2
+cd 1.3
 build.bat
 ```
 
-The [1.2/README.md](1.2/README.md) is the manual: `config.txt` keys, the
+The [1.3/README.md](1.3/README.md) is the manual: `config.txt` keys, the
 command line, reading the output, results format, resuming and raising
 bounds, and self-tests. Read it before running a real job.
 
@@ -69,8 +70,9 @@ including one with a different GPU vendor.
   [PRPLL / gpuowl](https://github.com/preda/gpuowl), which this is built on.
 - **P+1 is a secondary mode**, lower yield per unit of GPU time than P-1. It
   exists because no GIMPS *GPU* tool offers P+1 at all; run it in earnest only
-  once P-1 has been tried. It borrows P-1's bounds and pairing shape, and
-  (unlike P-1) does not yet reuse a completed stage-2 walk when you raise B2.
+  once P-1 has been tried. It has its own B1 model, but still borrows P-1's B2
+  and pairing shape, and (unlike P-1) does not yet reuse a completed stage-2
+  walk when you raise B2.
 - **Windows / MSVC only.** No Makefile, no Linux build, no CI.
 - **One exponent per run**, from `config.txt`. No worktodo queue, no PrimeNet
   automation — results are written for you to upload manually.

@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.3
+
+**P+1 gets its own B1 model.** P+1 used to silently borrow whatever B1 P-1's
+Dickman-rho model chose — a different smoothness target (`q+1`, not `q-1`),
+optimised for the wrong quantity. `pp1Prob()` is the same rho-integration as
+`pm1Prob()`, but removes only 1 bit (the known factor of 2 in
+`q+1 = 2(kp+1)`) instead of `log2(exponent)+1`: unlike P-1's `q-1 = 2kp`, `p`
+never divides `q+1` (`kp+1 == 1 mod p` for any k), so it isn't a free factor
+here. `choosePP1B1()` picks the B1 minimising expected work across the
+configured seed list, folding in that each seed pays its own full ladder (one
+squaring plus one multiply per bit, no fused-carry shortcut) and its own gcd,
+and that only ~50% of seeds land in the residue class P+1's mechanism
+actually needs (`1 - 0.5^n` chance across n seeds). B2 and the pairing shape
+are still borrowed from P-1's own choice — P+1 has no cost model of its own
+for stage 2 yet.
+
+**This is a real behavioural change, not just a bugfix**: P+1's auto-chosen
+B1 is now typically much smaller than before (the quantity that has to be
+B1-smooth for P+1 is about `p` times larger than P-1's, and Dickman's rho
+falls fast, so paying for a bigger B1 buys much less here). A `method = both`
+job now runs P-1 and P+1 at two different B1s, shown separately in the
+startup summary and in `--bounds`.
+
+**Also fixed**, found by inspecting a real `method = both` run: the banner
+said "P-1 factoring" regardless of method; the `M<exponent>, trial-factored
+to...` summary line was missing its indent; "estimated success" was P-1's
+own model shown even when P-1 wasn't running (a pure `method = pp1` job
+never runs P-1 at all); and the P+1 and P-1 sections ran together with no
+separator. P-1 and P+1 now get their own labelled `estimated ... success`
+lines, and the P-1 section gets a `P-1 attempt` header (matching P+1's own
+`P+1 attempt N of M`) with a blank line before it when both methods run.
+
 ## 1.2
 
 **P+1 stage 2.** P+1 could only find a factor q whose q+1 was entirely
