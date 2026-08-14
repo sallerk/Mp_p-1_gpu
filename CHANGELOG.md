@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.4
+
+**Exponents now come from `worktodo.txt`, and it can hold a queue.** Every
+prior version took exactly one exponent per run, from `exponent = ` in
+`config.txt`. That key is gone: exponents live in `worktodo.txt` instead
+(`worktodo_file` in `config.txt`, mirroring `results_file`'s own pattern),
+one per line, `#` comments and blank lines allowed same as `config.txt`. A
+run works the queue's first line, appends the result to `results.txt`,
+removes that line, and moves to the next -- all in one process, no relaunch
+needed between exponents. An old `config.txt` with an `exponent = ` line
+still in it fails with a clear migration message rather than being silently
+ignored.
+
+Interruption and failure are handled the way the rest of the program already
+handles them, not with new retry logic: a Ctrl-C mid-job leaves that entry's
+line in place, so relaunching resumes it from its checkpoint (unchanged
+behavior) and then continues down the queue from there. A job that fails
+(an actual error, not "no factor found" -- e.g. an exponent too small for
+any FFT shape) stops the whole queue at that entry rather than skipping past
+it, the same thing that already happened to a single-exponent run failing;
+the bad line stays put rather than being silently dropped or retried
+forever. `--bounds` and `--tune` read the queue's first entry, without
+consuming it, to scope themselves the way they used to scope to `config.txt`'s
+`exponent`.
+
+The job driver itself was restructured to make this possible: the
+FFT-selection-through-stage-2 logic that used to be the entire body of
+`runMain` after device bring-up is now its own function, `runOneJob`, called
+once per queue entry from a loop around it. The extraction was mechanical --
+no logic changed, only where it lives -- which is what let a per-entry
+failure keep working the same way it already did (an uncaught exception
+still reaches `runMain`'s own top-level `catch`, stopping the run) without
+writing any new error-handling code.
+
+New `--selftest=worktodo` gate (no GPU): round-trip parsing, exact-entry
+removal, malformed-line and missing-file handling, and specifically a file
+whose last line has no trailing newline -- routine for a hand-edited file,
+and the reason the new `Worktodo.cpp` reads the file itself rather than
+reusing `File`'s existing line iterator (used by `tune.txt`'s reader and by
+a vendored, previously-unused `deleteLine()` helper in `fs.cpp` that looks
+like it was meant for exactly this): that iterator throws if a line does not
+end in `\n`, which is correct for a machine-written file but wrong for one a
+human edits by hand.
+
 ## 1.3
 
 **P+1 gets its own B1 model.** P+1 used to silently borrow whatever B1 P-1's

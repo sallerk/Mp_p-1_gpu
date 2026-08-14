@@ -49,6 +49,7 @@ Written for this program, and GPLv3 along with the rest:
 | Checkpointing | `Save.{h,cpp}`, `Stage2Save.{h,cpp}`, `Pp1Stage2Save.{h,cpp}` |
 | Bounds | the cost model and `chooseBounds` in `Bounds.{h,cpp}`; `pp1Prob` and `choosePP1Bounds` (P+1's own B1/B2 model — no upstream P+1 probability tool exists to port from, unlike `pm1Prob`) |
 | Config and tests | `Config.{h,cpp}`, `Selftest.cpp`, `testBigInt.cpp` |
+| Exponent queue | `Worktodo.{h,cpp}` (1.4) — `worktodo.txt` parsing and atomic per-entry removal |
 | Build | `build.bat`, `tools/` |
 | Stage-2 kernels | `subWords` in `src/cl/etc.cl` |
 | P+1 stage 2 | `lucasVResidue`, `pp1Stage2`, `renormalize` in `Gpu.{h,cpp}` (no new kernel — built entirely from the existing `subWords`/`modMul`/`squareLL`) |

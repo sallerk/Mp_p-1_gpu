@@ -19,7 +19,8 @@ source is still in this repository (see below) and builds the same way.
 
 | version | download | |
 |---|---|---|
-| **1.3** | [**Mp_p-1_gpu-1.3-win64.zip**](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.3/Mp_p-1_gpu-1.3-win64.zip) | current. P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. Start here — see [1.3/README.md](1.3/README.md). |
+| **1.4** | *(source only — no release yet)* | current. Exponents now come from `worktodo.txt`, a queue processed in order, instead of a single `exponent =` in `config.txt` — build from source for now, see [1.4/README.md](1.4/README.md). |
+| 1.3 | [Mp_p-1_gpu-1.3-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.3/Mp_p-1_gpu-1.3-win64.zip) | P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. |
 | 1.2 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.2) | P+1 gained stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Kept as-is. |
 | 1.1 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.1) | raising B2 on a finished P-1 stage 2 reuses the completed accumulator and walks only the new range, instead of starting over. Kept as-is. |
 | 1.0 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.0) | first release. GPU P-1 with both stages, P+1 stage 1, automatic bound selection, checkpoint/resume, PrimeNet-format JSON results. Kept as-is. |
@@ -36,25 +37,27 @@ them is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
-Unzip a release and run it:
+Build from source — Visual Studio 2019/2022 with "Desktop development with
+C++", nothing else (1.4 has no packaged release yet; older versions can be
+unzipped and run directly instead):
+
+```bash
+cd 1.4
+build.bat
+```
 
 ```bash
 Mp_p-1_gpu.exe --selftest
 Mp_p-1_gpu.exe
 ```
 
-Edit `config.txt` to say what to factor and how; every setting is documented
-inline. Or build from source — Visual Studio 2019/2022 with "Desktop
-development with C++", nothing else:
+Add an exponent to `worktodo.txt` (one per line) and edit `config.txt` to say
+how to work it; every setting is documented inline.
 
-```bash
-cd 1.3
-build.bat
-```
-
-The [1.3/README.md](1.3/README.md) is the manual: `config.txt` keys, the
-command line, reading the output, results format, resuming and raising
-bounds, and self-tests. Read it before running a real job.
+The [1.4/README.md](1.4/README.md) is the manual: `config.txt` keys, the
+worktodo queue, the command line, reading the output, results format,
+resuming and raising bounds, and self-tests. Read it before running a real
+job.
 
 ## Requirements
 
@@ -79,8 +82,8 @@ including one with a different GPU vendor.
   gap), and (unlike P-1) does not yet reuse a completed stage-2 walk when you
   raise B2.
 - **Windows / MSVC only.** No Makefile, no Linux build, no CI.
-- **One exponent per run**, from `config.txt`. No worktodo queue, no PrimeNet
-  automation — results are written for you to upload manually.
+- **No PrimeNet automation.** `worktodo.txt` is a local queue, not a synced
+  one — results are written for you to upload manually.
 
 The full, per-version list is in each version's own README.
 
