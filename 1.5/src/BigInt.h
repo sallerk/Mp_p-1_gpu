@@ -13,13 +13,12 @@
 #pragma once
 
 #include "common.h"
-#include "Pool.h"
 
 #include <string>
 #include <vector>
 
 struct Nat {
-  std::vector<u64, PoolAlloc<u64>> w;
+  std::vector<u64> w;
 
   Nat() = default;
   explicit Nat(u64 v) { if (v) { w.push_back(v); } }
