@@ -111,6 +111,31 @@ int runBigIntTests() {
     }
   }
 
+  // --- Toom-4 vs Toom-3 ------------------------------------------------------
+  // Called directly (not through mul()'s size dispatch), same reasoning as
+  // the Toom-3 block above.
+  printf("  multiply (Toom-4 vs Toom-3)\n");
+  for (int t = 0; t < 60; ++t) {
+    Nat a = randomNat(rng, 1 + rng.next() % 900);
+    Nat b = randomNat(rng, 1 + rng.next() % 900);
+    check(mulToom4(a, b) == mulToom3(a, b), "mulToom4 == mulToom3");
+  }
+  {
+    // Unequal sizes, sizes not divisible by 4, and an operand smaller than a
+    // quarter of the other's length (so a2/a3 or b2/b3 truncate to zero after
+    // the 4-way split) -- exactly the cases a hand-derived interpolation is
+    // most likely to get wrong.
+    static const size_t pairs[][2] = {
+      {401, 401}, {401, 402}, {401, 403}, {401, 404}, {1200, 1}, {1, 1200},
+      {1200, 100}, {100, 1200}, {600, 600}, {601, 599}, {4, 1200}, {1200, 4},
+    };
+    for (auto& pr : pairs) {
+      Nat a = randomNat(rng, pr[0]), b = randomNat(rng, pr[1]);
+      check(mulToom4(a, b) == mulToom3(a, b),
+            "mulToom4 == mulToom3 (" + to_string(pr[0]) + "x" + to_string(pr[1]) + ")");
+    }
+  }
+
   // --- divrem defining identity -------------------------------------------
   printf("  divrem (u == q*v + r, r < v)\n");
   for (int t = 0; t < 300; ++t) {

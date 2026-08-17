@@ -1,7 +1,7 @@
 // Copyright (C) Mp_p-1_gpu
 //
 // See BigInt.h. Nothing here is clever; it is meant to be obviously correct,
-// with Karatsuba and Toom-Cook-3 as the only asymptotic concessions. The GCD
+// with Karatsuba and Toom-Cook-3/4 as the only asymptotic concessions. The GCD
 // on top is where the real work happens.
 
 #include "BigInt.h"
@@ -80,6 +80,21 @@ inline u64 div128by64(u64 hi, u64 lo, u64 d, u64* rem) {
 
 const size_t KARATSUBA_LIMBS = 40;   // below this, schoolbook wins
 const size_t TOOM3_LIMBS = 8000;     // below this, Karatsuba wins -- tuned empirically
+
+// mulToom4 is measurably faster than mulToom3 in isolated single-multiply
+// benchmarks (1.2-1.4x from 8000 up to 1,000,000 limbs), but measurably
+// SLOWER in the real recursive gcdHalf workload it actually needs to serve
+// (production-scale gcdHalf: 229.5s with Toom-3 as the top tier vs 250s+
+// with Toom-4 active, reproduced twice, both with and without Toom-4's own
+// internal parallelism). The isolated benchmark measures one giant multiply;
+// the real workload is many multiplies of many sizes across gcdHalf's
+// recursion, where Toom-4's higher per-call overhead (7 sub-products and 10
+// SNat combinations vs Toom-3's 5 and 6) apparently doesn't amortize the
+// same way. Root cause not fully identified -- set high enough that mul()
+// never reaches mulToom4 in practice, rather than ship a regression; kept
+// implemented and differentially tested since it's correct, just not yet
+// proven to help the workload that matters here.
+const size_t TOOM4_LIMBS = 10000000;
 
 } // namespace
 
@@ -292,6 +307,14 @@ SNat sDiv3(const SNat& x) {
   return mk(x.neg, q);
 }
 
+// Exact division by 5; the caller guarantees no remainder. Toom-4 only.
+SNat sDiv5(const SNat& x) {
+  Nat q, r;
+  divrem(x.mag, Nat(5), q, r);
+  assert(r.isZero());
+  return mk(x.neg, q);
+}
+
 } // namespace
 
 Nat mulKaratsuba(const Nat& a, const Nat& b) {
@@ -366,11 +389,101 @@ Nat mulToom3(const Nat& a, const Nat& b) {
   return r;
 }
 
+// Evaluate A(x)=a3x^3+a2x^2+a1x+a0, B(x) likewise, at x in
+// {0,1,-1,2,-2,"1/2",inf} -- 7 points for the degree-6 product of two
+// degree-3 splits. "1/2" is evaluated fraction-free as Ph=8a0+4a1+2a2+a3,
+// Qh=8b0+4b1+2b2+b3, giving rh=Ph*Qh=64*p(1/2)q(1/2); this point set keeps
+// every interpolation division small (2,3,4,5,8) rather than the larger
+// divisors a "3" 7th point would need. Derived from first principles and
+// checked numerically against a worked example (a=[1,2,3,4], b=[5,6,7,8],
+// true c0..c6 = 5,16,34,60,61,52,32) before implementation, the same way
+// mulToom3's formula was.
+Nat mulToom4(const Nat& a, const Nat& b) {
+  const size_t k = (max(a.size(), b.size()) + 3) / 4;
+  Nat a0, a1, a2, a3, b0, b1, b2, b3, rest, rest2;
+  split(a, k, a0, rest); split(rest, k, a1, rest2); split(rest2, k, a2, a3);
+  split(b, k, b0, rest); split(rest, k, b1, rest2); split(rest2, k, b2, b3);
+
+  const SNat pa0 = sOf(a0), pa1 = sOf(a1), pa2 = sOf(a2), pa3 = sOf(a3);
+  const SNat pb0 = sOf(b0), pb1 = sOf(b1), pb2 = sOf(b2), pb3 = sOf(b3);
+
+  const SNat p1 = sAdd(sAdd(pa0, pa1), sAdd(pa2, pa3));
+  const SNat q1 = sAdd(sAdd(pb0, pb1), sAdd(pb2, pb3));
+  const SNat pm1 = sSub(sAdd(pa0, pa2), sAdd(pa1, pa3));
+  const SNat qm1 = sSub(sAdd(pb0, pb2), sAdd(pb1, pb3));
+  const SNat p2 = sAdd(sAdd(pa0, sShl(pa1, 1)), sAdd(sShl(pa2, 2), sShl(pa3, 3)));
+  const SNat q2 = sAdd(sAdd(pb0, sShl(pb1, 1)), sAdd(sShl(pb2, 2), sShl(pb3, 3)));
+  const SNat pm2 = sSub(sAdd(pa0, sShl(pa2, 2)), sAdd(sShl(pa1, 1), sShl(pa3, 3)));
+  const SNat qm2 = sSub(sAdd(pb0, sShl(pb2, 2)), sAdd(sShl(pb1, 1), sShl(pb3, 3)));
+  const SNat ph = sAdd(sAdd(sShl(pa0, 3), sShl(pa1, 2)), sAdd(sShl(pa2, 1), pa3));
+  const SNat qh = sAdd(sAdd(sShl(pb0, 3), sShl(pb1, 2)), sAdd(sShl(pb2, 1), pb3));
+
+  // The seven evaluation-point products are independent -- parallelize them
+  // the same way mulToom3 does (see Parallel.h). (Measurement showed making
+  // these sequential instead is worse, not better -- see the TOOM4_LIMBS
+  // comment below for why mulToom4 is not actually reached in practice.)
+  Nat m0, minf, m1, mm1, m2, mm2, mh;
+  const bool big = a.size() + b.size() >= PARALLEL_MIN_LIMBS;
+  runParallel({
+    [&]{ m0 = mul(a0, b0); }, [&]{ minf = mul(a3, b3); },
+    [&]{ m1 = mul(p1.mag, q1.mag); }, [&]{ mm1 = mul(pm1.mag, qm1.mag); },
+    [&]{ m2 = mul(p2.mag, q2.mag); }, [&]{ mm2 = mul(pm2.mag, qm2.mag); },
+    [&]{ mh = mul(ph.mag, qh.mag); },
+  }, big);
+  const SNat r0 = sOf(m0);
+  const SNat rinf = sOf(minf);
+  const SNat r1 = mk(p1.neg != q1.neg, m1);
+  const SNat rm1 = mk(pm1.neg != qm1.neg, mm1);
+  const SNat r2 = mk(p2.neg != q2.neg, m2);
+  const SNat rm2 = mk(pm2.neg != qm2.neg, mm2);
+  const SNat rh = mk(ph.neg != qh.neg, mh);
+
+  const SNat c0 = r0;
+  const SNat c6 = rinf;
+
+  const SNat A1 = sSub(sSub(r1, c0), c6);
+  const SNat Am1 = sSub(sSub(rm1, c0), c6);
+  const SNat A2 = sSub(sSub(r2, c0), sMulSmall(c6, 64));
+  const SNat Am2 = sSub(sSub(rm2, c0), sMulSmall(c6, 64));
+  const SNat Ah = sSub(sSub(rh, sMulSmall(c0, 64)), c6);
+
+  const SNat S1 = sShr(sAdd(A1, Am1), 1);
+  const SNat D1 = sShr(sSub(A1, Am1), 1);
+  const SNat S2 = sShr(sAdd(A2, Am2), 3);
+  const SNat D2 = sShr(sSub(A2, Am2), 2);
+
+  const SNat c4 = sDiv3(sSub(S2, S1));
+  const SNat c2 = sSub(S1, c4);
+
+  const SNat D3 = sShr(sSub(sSub(Ah, sMulSmall(c2, 16)), sMulSmall(c4, 4)), 1);
+
+  const SNat E1 = sDiv3(sSub(D2, D1));
+  const SNat E2 = sDiv3(sSub(D3, D1));
+  const SNat F = sDiv5(sSub(E2, E1));
+  const SNat G = sSub(D1, E1);
+
+  const SNat c5 = sDiv3(sSub(F, G));
+  const SNat c1 = sAdd(c5, F);
+  const SNat c3 = sSub(sSub(D1, c1), c5);
+
+  assert(!c1.neg && !c2.neg && !c3.neg && !c4.neg && !c5.neg);
+
+  Nat r = c0.mag;
+  r = add(r, shl(c1.mag, k * 64));
+  r = add(r, shl(c2.mag, 2 * k * 64));
+  r = add(r, shl(c3.mag, 3 * k * 64));
+  r = add(r, shl(c4.mag, 4 * k * 64));
+  r = add(r, shl(c5.mag, 5 * k * 64));
+  r = add(r, shl(c6.mag, 6 * k * 64));
+  return r;
+}
+
 Nat mul(const Nat& a, const Nat& b) {
   if (a.isZero() || b.isZero()) { return Nat{}; }
   if (min(a.size(), b.size()) < KARATSUBA_LIMBS) { return mulSchoolbook(a, b); }
   if (min(a.size(), b.size()) < TOOM3_LIMBS) { return mulKaratsuba(a, b); }
-  return mulToom3(a, b);
+  if (min(a.size(), b.size()) < TOOM4_LIMBS) { return mulToom3(a, b); }
+  return mulToom4(a, b);
 }
 
 // ---------------------------------------------------------------------------
