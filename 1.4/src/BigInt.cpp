@@ -1,8 +1,8 @@
 // Copyright (C) Mp_p-1_gpu
 //
 // See BigInt.h. Nothing here is clever; it is meant to be obviously correct,
-// with Karatsuba as the only asymptotic concession. The GCD on top is where the
-// real work happens.
+// with Karatsuba and Toom-Cook-3 as the only asymptotic concessions. The GCD
+// on top is where the real work happens.
 
 #include "BigInt.h"
 
@@ -78,6 +78,7 @@ inline u64 div128by64(u64 hi, u64 lo, u64 d, u64* rem) {
 }
 
 const size_t KARATSUBA_LIMBS = 40;   // below this, schoolbook wins
+const size_t TOOM3_LIMBS = 8000;     // below this, Karatsuba wins -- tuned empirically
 
 } // namespace
 
@@ -239,12 +240,60 @@ void split(const Nat& a, size_t k, Nat& lo, Nat& hi) {
   hi.norm();
 }
 
+// ---------------------------------------------------------------------------
+// Toom-Cook-3 support: signed magnitudes.
+//
+// Evaluating A(x)=a2*x^2+a1*x+a0 at x=-1 and combining the five evaluation
+// products (see mulToom3) genuinely needs negative intermediates -- unlike
+// Gcd.cpp's combine(), which can assume at most one side is negative, either
+// side can be negative here. Nat itself stays non-negative-only (its
+// documented contract in BigInt.h); this wraps it with a sign, kept local to
+// this file. The five true output coefficients are always non-negative
+// (product of non-negative-coefficient polynomials), so mulToom3 asserts
+// that once interpolation is done -- a cheap, direct check on the formulas.
+// ---------------------------------------------------------------------------
+
+struct SNat { bool neg = false; Nat mag; };
+
+// The only SNat constructor: forces neg=false whenever mag is zero, so "-0"
+// can never appear. Every function below returns through this -- sAdd's
+// cancelling branch and sMul's zero-operand case would otherwise both be
+// able to produce a negative zero, which is numerically harmless but trips
+// mulToom3's non-negative-coefficient assert for no real reason.
+SNat mk(bool neg, Nat mag) { return {!mag.isZero() && neg, std::move(mag)}; }
+
+SNat sOf(const Nat& n) { return mk(false, n); }
+
+SNat sAdd(const SNat& x, const SNat& y) {
+  if (x.mag.isZero()) { return y; }
+  if (y.mag.isZero()) { return x; }
+  if (x.neg == y.neg) { return mk(x.neg, add(x.mag, y.mag)); }
+  if (cmp(x.mag, y.mag) >= 0) { return mk(x.neg, sub(x.mag, y.mag)); }
+  return mk(y.neg, sub(y.mag, x.mag));
+}
+
+SNat sSub(const SNat& x, const SNat& y) { return sAdd(x, mk(!y.neg, y.mag)); }
+
+SNat sMul(const SNat& x, const SNat& y) { return mk(x.neg != y.neg, mul(x.mag, y.mag)); }
+
+SNat sMulSmall(const SNat& x, u64 k) { return mk(x.neg, mul(x.mag, Nat(k))); }
+
+SNat sShl(const SNat& x, size_t n) { return mk(x.neg, shl(x.mag, n)); }
+
+// Exact division by 2^n; the caller guarantees no remainder.
+SNat sShr(const SNat& x, size_t n) { return mk(x.neg, shr(x.mag, n)); }
+
+// Exact division by 3; the caller guarantees no remainder.
+SNat sDiv3(const SNat& x) {
+  Nat q, r;
+  divrem(x.mag, Nat(3), q, r);
+  assert(r.isZero());
+  return mk(x.neg, q);
+}
+
 } // namespace
 
-Nat mul(const Nat& a, const Nat& b) {
-  if (a.isZero() || b.isZero()) { return Nat{}; }
-  if (min(a.size(), b.size()) < KARATSUBA_LIMBS) { return mulSchoolbook(a, b); }
-
+Nat mulKaratsuba(const Nat& a, const Nat& b) {
   const size_t k = (max(a.size(), b.size()) + 1) / 2;
   Nat a0, a1, b0, b1;
   split(a, k, a0, a1);
@@ -258,6 +307,57 @@ Nat mul(const Nat& a, const Nat& b) {
   Nat r = add(z0, shl(z1, k * 64));
   r = add(r, shl(z2, 2 * k * 64));
   return r;
+}
+
+// Evaluate A(x)=a2x^2+a1x+a0, B(x)=b2x^2+b1x+b0 at x in {0,1,-1,2,inf}, then
+// interpolate the degree-4 product's coefficients. Derived from first
+// principles (see the plan this was implemented from) and checked
+// numerically against a worked example before implementation.
+Nat mulToom3(const Nat& a, const Nat& b) {
+  const size_t k = (max(a.size(), b.size()) + 2) / 3;
+  Nat a0, a1, a2, b0, b1, b2, rest;
+  split(a, k, a0, rest); split(rest, k, a1, a2);
+  split(b, k, b0, rest); split(rest, k, b1, b2);
+
+  const SNat pa0 = sOf(a0), pa1 = sOf(a1), pa2 = sOf(a2);
+  const SNat pb0 = sOf(b0), pb1 = sOf(b1), pb2 = sOf(b2);
+
+  const SNat p1 = sAdd(sAdd(pa0, pa1), pa2);
+  const SNat q1 = sAdd(sAdd(pb0, pb1), pb2);
+  const SNat pm1 = sSub(sAdd(pa0, pa2), pa1);
+  const SNat qm1 = sSub(sAdd(pb0, pb2), pb1);
+  const SNat p2 = sAdd(sAdd(pa0, sShl(pa1, 1)), sShl(pa2, 2));
+  const SNat q2 = sAdd(sAdd(pb0, sShl(pb1, 1)), sShl(pb2, 2));
+
+  const SNat v0 = sOf(mul(a0, b0));
+  const SNat vinf = sOf(mul(a2, b2));
+  const SNat v1 = sMul(p1, q1);
+  const SNat vm1 = sMul(pm1, qm1);
+  const SNat v2 = sMul(p2, q2);
+
+  const SNat c0 = v0;
+  const SNat c4 = vinf;
+  const SNat c2 = sSub(sSub(sShr(sAdd(v1, vm1), 1), c0), c4);
+  const SNat numerator3 =
+      sSub(sSub(sSub(sAdd(v2, sMulSmall(c0, 3)), sMulSmall(c4, 12)), sMulSmall(v1, 3)), vm1);
+  const SNat c3 = sDiv3(sShr(numerator3, 1));
+  const SNat c1 = sSub(sShr(sSub(v1, vm1), 1), c3);
+
+  assert(!c1.neg && !c2.neg && !c3.neg);
+
+  Nat r = c0.mag;
+  r = add(r, shl(c1.mag, k * 64));
+  r = add(r, shl(c2.mag, 2 * k * 64));
+  r = add(r, shl(c3.mag, 3 * k * 64));
+  r = add(r, shl(c4.mag, 4 * k * 64));
+  return r;
+}
+
+Nat mul(const Nat& a, const Nat& b) {
+  if (a.isZero() || b.isZero()) { return Nat{}; }
+  if (min(a.size(), b.size()) < KARATSUBA_LIMBS) { return mulSchoolbook(a, b); }
+  if (min(a.size(), b.size()) < TOOM3_LIMBS) { return mulKaratsuba(a, b); }
+  return mulToom3(a, b);
 }
 
 // ---------------------------------------------------------------------------

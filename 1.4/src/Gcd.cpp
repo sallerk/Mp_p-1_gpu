@@ -13,6 +13,7 @@
 // progress is always made and the loop cannot stall.
 
 #include "Gcd.h"
+#include "timeutil.h"
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +26,15 @@
 #include <vector>
 
 using namespace std;
+
+std::atomic<u64> gMulNanos{0};
+std::atomic<u64> gDivNanos{0};
+
+namespace {
+u64 nanosSince(const Timer& t) {
+  return u64(t.at() * 1e9);
+}
+} // namespace
 
 // Instrumentation: if the leading-limb loop never resolves a step, gcdLehmer
 // silently degenerates into plain Euclid and every test still passes while the
@@ -232,6 +242,30 @@ bool matIsIdentity(const Mat& m) {
   return m.A.isOne() && m.B.isZero() && m.C.isZero() && m.D.isOne();
 }
 
+// Timed wrappers, used only where operands are large enough that the split
+// between multiplication and division time is worth measuring (see Gcd.h's
+// gMulNanos/gDivNanos). Timer overhead is negligible next to a large-operand
+// mul/divrem, so these are safe to leave permanently instrumented.
+Nat timedMul(const Nat& a, const Nat& b) {
+  Timer t;
+  Nat r = mul(a, b);
+  gMulNanos.fetch_add(nanosSince(t));
+  return r;
+}
+
+void timedDivrem(const Nat& u, const Nat& v, Nat& q, Nat& r) {
+  Timer t;
+  divrem(u, v, q, r);
+  gDivNanos.fetch_add(nanosSince(t));
+}
+
+Nat timedMod(const Nat& a, const Nat& b) {
+  Timer t;
+  Nat r = mod(a, b);
+  gDivNanos.fetch_add(nanosSince(t));
+  return r;
+}
+
 // m1 applied first, then m2. Derived by substituting
 //   a1 = A1*a - B1*b, b1 = D1*b - C1*a
 // into m2's formulas; every coefficient comes out non-negative.
@@ -239,10 +273,10 @@ Mat matCompose(const Mat& m1, const Mat& m2) {
   Nat t[8];
   const bool big = m1.A.size() + m2.A.size() >= PARALLEL_MIN_LIMBS;
   runParallel({
-    [&]{ t[0] = mul(m2.A, m1.A); }, [&]{ t[1] = mul(m2.B, m1.C); },
-    [&]{ t[2] = mul(m2.A, m1.B); }, [&]{ t[3] = mul(m2.B, m1.D); },
-    [&]{ t[4] = mul(m2.D, m1.C); }, [&]{ t[5] = mul(m2.C, m1.A); },
-    [&]{ t[6] = mul(m2.D, m1.D); }, [&]{ t[7] = mul(m2.C, m1.B); },
+    [&]{ t[0] = timedMul(m2.A, m1.A); }, [&]{ t[1] = timedMul(m2.B, m1.C); },
+    [&]{ t[2] = timedMul(m2.A, m1.B); }, [&]{ t[3] = timedMul(m2.B, m1.D); },
+    [&]{ t[4] = timedMul(m2.D, m1.C); }, [&]{ t[5] = timedMul(m2.C, m1.A); },
+    [&]{ t[6] = timedMul(m2.D, m1.D); }, [&]{ t[7] = timedMul(m2.C, m1.B); },
   }, big);
   Mat r;
   r.A = add(t[0], t[1]);
@@ -259,8 +293,8 @@ bool matApply(const Mat& m, const Nat& a, const Nat& b, Nat& na, Nat& nb) {
   Nat p1, p2, q1, q2;
   const bool big = a.size() >= PARALLEL_MIN_LIMBS;
   runParallel({
-    [&]{ p1 = mul(m.A, a); }, [&]{ p2 = mul(m.B, b); },
-    [&]{ q1 = mul(m.D, b); }, [&]{ q2 = mul(m.C, a); },
+    [&]{ p1 = timedMul(m.A, a); }, [&]{ p2 = timedMul(m.B, b); },
+    [&]{ q1 = timedMul(m.D, b); }, [&]{ q2 = timedMul(m.C, a); },
   }, big);
   if (big) { tick(4); }
   if (cmp(p1, p2) < 0) { return false; }
@@ -303,7 +337,7 @@ Mat reduceDirect(Nat& a, Nat& b, size_t target) {
     // than the leading-word loop keeps this simple; it is only ever called on
     // operands that are already small.
     Nat q1, r1;
-    divrem(a, b, q1, r1);
+    timedDivrem(a, b, q1, r1);
     if (r1.isZero()) {
       // gcd found exactly; one more step would divide by zero.
       // Represent the single step and stop.
@@ -316,7 +350,7 @@ Mat reduceDirect(Nat& a, Nat& b, size_t target) {
       break;
     }
     Nat q2, r2;
-    divrem(b, r1, q2, r2);
+    timedDivrem(b, r1, q2, r2);
     Mat m = matStep2(q1, q2);
     Nat na, nb;
     if (!matApply(m, a, b, na, nb)) { break; }   // should not happen
@@ -397,7 +431,7 @@ Nat gcdHalf(Nat a, Nat b) {
     if (cmp(a, b) < 0) { std::swap(a, b); }
     if (a.bits() >= n) {
       // No progress at all: take one honest division so the loop cannot stall.
-      Nat r = mod(a, b);
+      Nat r = timedMod(a, b);
       a = std::move(b);
       b = std::move(r);
     }

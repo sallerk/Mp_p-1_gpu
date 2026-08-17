@@ -4,8 +4,8 @@
 //
 // This exists because P-1/P+1 needs gcd(x-1, 2^p-1) with p > 1e8, and there is
 // no GMP on the target toolchain (MSVC only). Only what the GCD needs is
-// implemented: compare, add, sub, shift, multiply (schoolbook + Karatsuba) and
-// truncating division (Knuth algorithm D).
+// implemented: compare, add, sub, shift, multiply (schoolbook / Karatsuba /
+// Toom-Cook-3, by size) and truncating division (Knuth algorithm D).
 //
 // Invariant: `w` never has trailing zero limbs, so w.size() is the exact limb
 // count and zero is represented by an empty vector.
@@ -48,8 +48,11 @@ Nat sub(const Nat& a, const Nat& b);          // requires a >= b
 Nat shl(const Nat& a, size_t n);
 Nat shr(const Nat& a, size_t n);
 
-Nat mul(const Nat& a, const Nat& b);          // Karatsuba above a threshold
-Nat mulSchoolbook(const Nat& a, const Nat& b);  // exposed so tests can cross-check
+Nat mul(const Nat& a, const Nat& b);          // schoolbook / Karatsuba / Toom-3 by size
+// Each tier exposed so tests can cross-check it against the one below it.
+Nat mulSchoolbook(const Nat& a, const Nat& b);
+Nat mulKaratsuba(const Nat& a, const Nat& b);
+Nat mulToom3(const Nat& a, const Nat& b);
 
 // u = q*v + r with r < v. v must be non-zero.
 void divrem(const Nat& u, const Nat& v, Nat& q, Nat& r);

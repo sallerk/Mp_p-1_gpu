@@ -17,10 +17,16 @@
 
 #include "BigInt.h"
 
+#include <atomic>
 #include <functional>
 
 Nat gcdEuclid(Nat a, Nat b);
 Nat gcdLehmer(Nat a, Nat b);
+
+// Diagnostic only: nanoseconds spent inside mul() (matCompose/matApply) vs.
+// divrem()/mod() (reduceDirect, gcdHalf's no-progress fallback) during the
+// large-operand part of gcdHalf. Read with .load(), reset with .store(0).
+extern std::atomic<u64> gMulNanos, gDivNanos;
 
 // Subquadratic: recursive half-GCD (Schoenhage). Reduces the operands by half
 // their length per level using only their leading bits, so the cost is

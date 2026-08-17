@@ -15,6 +15,7 @@
 #include "PM1.h"
 #include "timeutil.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -81,6 +82,33 @@ int runBigIntTests() {
     Nat a = randomNat(rng, 1 + rng.next() % 160);
     Nat b = randomNat(rng, 1 + rng.next() % 160);
     check(mul(a, b) == mulSchoolbook(a, b), "mul == mulSchoolbook");
+  }
+
+  // --- Toom-3 vs Karatsuba --------------------------------------------------
+  // Called directly (not through mul()'s size dispatch) so the edge cases
+  // below -- especially the very unequal sizes -- actually exercise
+  // mulToom3's own splitting/interpolation, regardless of where TOOM3_LIMBS
+  // happens to be set.
+  printf("  multiply (Toom-3 vs Karatsuba)\n");
+  for (int t = 0; t < 60; ++t) {
+    Nat a = randomNat(rng, 1 + rng.next() % 700);
+    Nat b = randomNat(rng, 1 + rng.next() % 700);
+    check(mulToom3(a, b) == mulKaratsuba(a, b), "mulToom3 == mulKaratsuba");
+  }
+  {
+    // Unequal sizes, sizes not divisible by 3, and an operand smaller than a
+    // third of the other's length (so a2 or b2 truncates to zero after the
+    // 3-way split) -- exactly the cases a hand-derived interpolation is most
+    // likely to get wrong.
+    static const size_t pairs[][2] = {
+      {301, 301}, {301, 302}, {301, 303}, {900, 1}, {1, 900}, {900, 100},
+      {100, 900}, {450, 450}, {451, 449}, {600, 600}, {3, 900}, {900, 3},
+    };
+    for (auto& pr : pairs) {
+      Nat a = randomNat(rng, pr[0]), b = randomNat(rng, pr[1]);
+      check(mulToom3(a, b) == mulKaratsuba(a, b),
+            "mulToom3 == mulKaratsuba (" + to_string(pr[0]) + "x" + to_string(pr[1]) + ")");
+    }
   }
 
   // --- divrem defining identity -------------------------------------------
@@ -201,17 +229,26 @@ int runBigIntTests() {
   }
 
   // --- half-GCD: is it actually subquadratic? ------------------------------
+  // Also reports the real mul-vs-div time split (gMulNanos/gDivNanos, see
+  // Gcd.h) at each scale, up to the exact bit length of M82589933 -- the
+  // production-scale question this exists to answer, not extrapolated from
+  // the smaller tiers below it.
   printf("\n  gcdHalf scaling vs gcdLehmer\n");
   {
     double prev = 0;
     size_t prevLimbs = 0;
-    for (size_t limbs : {size_t(2000), size_t(8000), size_t(32000), size_t(128000)}) {
+    for (size_t limbs : {size_t(2000), size_t(8000), size_t(32000), size_t(128000),
+                          size_t(1290468)}) {
       Nat a = randomNat(rng, limbs), b = randomNat(rng, limbs);
       if (cmp(a, b) < 0) { std::swap(a, b); }
 
+      gMulNanos = 0; gDivNanos = 0;
       Timer t1;
       Nat gh = gcdHalf(a, b);
       const double halfSecs = t1.at();
+      const double mulSecs = double(gMulNanos.load()) / 1e9;
+      const double divSecs = double(gDivNanos.load()) / 1e9;
+      const double otherSecs = std::max(0.0, halfSecs - mulSecs - divSecs);
 
       // Lehmer is quadratic; only run it where that is still affordable.
       double lehSecs = -1;
@@ -224,7 +261,11 @@ int runBigIntTests() {
 
       const double growth = (prev > 0) ? halfSecs / prev : 0.0;
       const double sizeRatio = (prevLimbs > 0) ? double(limbs) / prevLimbs : 0.0;
-      printf("     %6zu limbs: half %7.3fs", limbs, halfSecs);
+      printf("     %7zu limbs: half %8.3fs  [mul %7.3fs (%4.1f%%) div %7.3fs (%4.1f%%) other %7.3fs (%4.1f%%)]",
+             limbs, halfSecs,
+             mulSecs, halfSecs > 0 ? 100.0 * mulSecs / halfSecs : 0.0,
+             divSecs, halfSecs > 0 ? 100.0 * divSecs / halfSecs : 0.0,
+             otherSecs, halfSecs > 0 ? 100.0 * otherSecs / halfSecs : 0.0);
       if (lehSecs >= 0) { printf("  lehmer %7.3fs (%.1fx)", lehSecs, lehSecs / halfSecs); }
       if (growth > 0)   { printf("   [%.0fx size -> %.1fx time]", sizeRatio, growth); }
       printf("\n");
