@@ -7,8 +7,21 @@ OpenCL SDK.
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [../ATTRIBUTION.md](../ATTRIBUTION.md).
 
-> **In development — not released.** [1.5](../1.5/README.md) is the current
-> release. What has changed since it is in [../CHANGELOG.md](../CHANGELOG.md).
+> This is the current release. What changed since 1.5 is in
+> [../CHANGELOG.md](../CHANGELOG.md).
+
+> **1.6 fixes a real correctness bug.** Resuming an interrupted stage 1 --
+> Ctrl-C, a crash, a reboot, anything that left a checkpoint and got restarted
+> -- reprocessed one exponent bit, silently corrupting the residue. This bug
+> is not new to 1.6: it has been present since the checkpoint/resume mechanism
+> was written, in every released version including 1.5 (whose binary is
+> patched in place for the same fix). If you have ever resumed a stage-1 run
+> from a checkpoint, its result should be treated as unverified.
+>
+> Alongside the fix: stage 1 now checkpoints immediately on Ctrl-C instead of
+> only periodically; Ctrl-C is honored during the gcd phases too, which it
+> previously was not; the stage-1 gcd now runs concurrently with stage 2
+> instead of after it; and the schoolbook multiply base case is faster.
 
 ---
 

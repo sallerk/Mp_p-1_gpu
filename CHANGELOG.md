@@ -2,6 +2,40 @@
 
 ## 1.6 (in development)
 
+**Resuming an interrupted stage 1 reprocessed one exponent bit, corrupting the
+residue.** `powBase3`, `lucasV`, and `powResidue` all restarted a resumed walk
+at `startBit = resumeBit + 1`. `resumeBit` is saved AFTER that bit's `square()`
+already ran -- it is the bit the interrupted run *just finished*, already
+folded into the saved residue, not "the next bit to process" the `+ 1`
+assumed. Resuming past it reprocessed that same bit a second time, silently
+producing the wrong `x` for the rest of stage 1 -- and therefore the wrong
+`gcd(x-1, M_p)`, meaning a resumed run could miss a real factor without any
+error or warning. This is not new in 1.6: the mechanism is unchanged since it
+was written, so any interrupted-and-resumed stage-1 walk in any released
+version -- Ctrl-C, a crash, a reboot, anything that left a partial
+checkpoint and got restarted -- has been affected. Also ported to 1.5, whose
+released binary has the identical bug; see that section below.
+
+Found by writing the first real test for this exact scenario -- interrupt a
+real ladder mid-walk, resume it, and check the result against an
+uninterrupted run bit for bit. The existing coverage never exercised this:
+the B1-extension tests only resume a *completed* stage 1 onto a higher B1,
+which never touches this code path at all. Fixed by starting the resumed
+loop at `resumeBit` itself.
+
+**Stage 1 now checkpoints immediately on interrupt, instead of only
+periodically.** Stage 2 already captured its exact position the moment
+Ctrl-C was noticed; stage 1's squaring and Lucas ladders did not -- they only
+saved on a `checkpoint_seconds` timer or on completion, so an interrupt
+between two scheduled saves discarded up to a full checkpoint interval of GPU
+work (redone, not lost, but wasted). Fixed by forcing a full carry on the
+iteration that precedes every progress check when checkpointing is on (P+1's
+ladder needed no such forcing -- its state is always fully carried), so an
+interrupt always has a valid residue to save right away. Writing the first
+real test for this -- which had to actually interrupt and resume a walk
+rather than just extend a completed one -- is what surfaced the resume bug
+above.
+
 **Ctrl-C did not stop a run during the gcd phases.** `gGcdProgress` was
 void-returning, so nothing inside `gcdHalf` could ever be told to stop. The
 gcd is the longest single phase of a run (minutes at production scale) and
@@ -133,6 +167,14 @@ Toom-4's own differential tests added to gate G2 (1986 checks, up from 1914).
 **Post-release fix (source only, same folder):** the released 1.5 binary does
 not honor Ctrl-C during the gcd phases -- see the 1.6 entry above for the
 bug and fix, which also applies here since `1.5/src` was patched in place.
+
+**Post-release fix (source only, same folder):** the released 1.5 binary
+reprocesses one exponent bit when resuming an interrupted stage 1, corrupting
+the residue -- see the 1.6 entry above for the bug and fix (`powBase3`,
+`lucasV`, `powResidue` in `Gpu.cpp`), which also applies here. This affects
+any run that was interrupted mid-stage-1 (Ctrl-C, a crash, a reboot) and then
+resumed from the checkpoint; a run that completed in one sitting, or was
+interrupted only during stage 2 or the gcd, is not affected.
 
 ## 1.4
 
