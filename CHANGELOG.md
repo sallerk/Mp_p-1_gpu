@@ -2,6 +2,20 @@
 
 ## 1.6 (in development)
 
+**Ctrl-C did not stop a run during the gcd phases.** `gGcdProgress` was
+void-returning, so nothing inside `gcdHalf` could ever be told to stop. The
+gcd is the longest single phase of a run (minutes at production scale) and
+every GPU phase already had an equivalent bool-returning progress callback
+that broke its loop on `false` -- the gcd was the one place Ctrl-C was
+silently ignored until it finished on its own, at which point the job looked
+complete and (with a stage 2 configured) was removed from `worktodo.txt`
+without ever writing a result. Found live: a `worktodo.txt` that lost its
+queued exponent with no matching `results.txt` entry after Ctrl-C during a
+gcd. `gGcdProgress` now returns bool; returning false throws a `GcdAborted`
+that unwinds to whichever caller installed the hook, which sets that result's
+existing (previously dead for this case) `interrupted` field. Also ported to
+1.5, whose released binary has the same bug -- see that section below.
+
 **The stage-1 gcd now runs while the GPU does stage 2.** Not a faster gcd --
 the same gcd, moved off the critical path. It was CPU-only work with the card
 sitting idle, and at M82589933 that is ~184s of a 613s run during which the
@@ -115,6 +129,10 @@ No behavior outside `BigInt`/`Gcd` changed. The full selftest regression
 (`gcd`, `exponent`, `stage2plan`, `bounds`, `worktodo`, `engine`, `pm1`,
 `extend`, `pp1`, `stage2`, `b2extend`, `pp1stage2`) passes unchanged, with
 Toom-4's own differential tests added to gate G2 (1986 checks, up from 1914).
+
+**Post-release fix (source only, same folder):** the released 1.5 binary does
+not honor Ctrl-C during the gcd phases -- see the 1.6 entry above for the
+bug and fix, which also applies here since `1.5/src` was patched in place.
 
 ## 1.4
 
