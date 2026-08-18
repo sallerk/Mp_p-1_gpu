@@ -1,4 +1,4 @@
-# Mp_p-1_gpu 1.4
+# Mp_p-1_gpu 1.5
 
 GPU **P-1** and **P+1** factoring of Mersenne numbers `M_p = 2^p - 1`, both with
 two stages. Windows / MSVC, no external dependencies — no GMP, no CUDA or
@@ -7,14 +7,19 @@ OpenCL SDK.
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [../ATTRIBUTION.md](../ATTRIBUTION.md).
 
-> This is the current release. What changed since 1.3 is in
+> This is the current release. What changed since 1.4 is in
 > [../CHANGELOG.md](../CHANGELOG.md).
+
+> **1.5 is a speed release.** Nothing about how you run it changed. The gcd
+> that finishes each stage — the phase that prints `gcd CPU` and leaves the
+> GPU idle — is about **2.4x faster**, which on a 100M-digit exponent is
+> minutes per stage rather than tens of minutes.
 
 ---
 
 ## Download
 
-Take `Mp_p-1_gpu-1.4-win64.zip` from the
+Take `Mp_p-1_gpu-1.5-win64.zip` from the
 [Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), unzip it
 anywhere, and run it. There is nothing to install:
 
@@ -165,7 +170,7 @@ P+1 -- they all share the same `gcdWithProgress` reporting.
 
 ```json
 {"status":"F","exponent":81679223,"worktype":"P-1","b1":2000000,"b2":60000000,
- "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.4"},
+ "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.5"},
  "timestamp":"2026-07-28 17:29:54","user":"...","computer":"..."}
 ```
 

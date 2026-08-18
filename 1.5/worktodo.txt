@@ -24,7 +24,8 @@
 #  exponent".
 # ===========================================================================
 
-# Carried over from config.txt's exponent = line when this version was set
-# up -- there is already a checkpoint on disk for it (pp1_53787523_...).
-53787523
+# Add one exponent per line below, for example:
+#
+#   82589933
+#   86243
 

@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.5
+
+**The gcd is about 2.4x faster.** Nothing about running the program changed --
+no new options, no config keys, no file formats. This is entirely about the
+phase that prints `gcd CPU` and leaves the GPU idle, which at 100M-digit
+exponents was taking longer than the GPU work it followed. At the production
+size used for measurement throughout (M82589933, a 1,290,468-limb gcd), one
+`gcdHalf` call went from **338s to 143s**.
+
+Four changes got there, and the order matters, because two of them only paid
+off because of the others.
+
+**Toom-Cook-3's sub-products now run in parallel.** `Gcd.cpp` already ran its
+matrix sub-multiplies across cores; `mulToom3`'s own five independent
+evaluation-point products did not. They do now, through a thread-budget
+dispatcher shared between `Gcd.cpp` and `BigInt.cpp` (new `Parallel.h`) --
+shared rather than per-file because these call sites nest, and two independent
+budgets would oversubscribe the machine. 338s -> 226s.
+
+**The gcd was allocator-bound, which was not what anyone assumed.** Every
+`Nat` operation allocates a backing vector, and at production scale the gcd
+does that hundreds of millions of times. A CPU sampling profile (~1.8M
+samples, aggregated by module) put **~45% of all process CPU time inside the
+Windows heap**, against ~53% in the program's own arithmetic. `Nat`'s
+allocator is now a thread-local, lock-free free list (new `Pool.h`), and
+`Parallel.cpp`'s workers became long-lived so those per-thread pools survive
+between tasks instead of being born cold. 226-233s -> **148.8s**. A
+re-profile of the result put the heap at **3.7%**, down from ~45%.
+
+**Toom-Cook-4 was added, and it is switched on -- but only after the
+allocator fix.** This is the part worth reading. Toom-4 was implemented,
+verified against Toom-3 by differential testing, and then deliberately left
+*dormant*, because switching it on made the real gcd slower (250s+ against a
+229.5s baseline) even though every isolated single-multiply benchmark said it
+was 1.2-1.4x faster. The profile explained the contradiction: Toom-4 trades
+arithmetic for temporaries, so it delivered exactly what it promised --
+12-13% fewer arithmetic samples -- and lost anyway, because in an
+allocator-bound workload the temporaries cost more than the arithmetic they
+saved. With the thread-local pool in place the trade turns favourable and the
+advantage finally shows up as wall time: 148.8s -> **143.0s**, aggregate
+multiply CPU-time 373s -> 325s.
+
+**Both Toom tiers stopped recomputing shared partial sums.** `mulToom4`'s
+`p1`/`pm1` and `p2`/`pm2` are plus/minus pairs built from the same two partial
+sums, each computed independently twice; `mulToom3`'s `p1`/`pm1` had the same
+pattern once. Sharing them cut combination-phase time 7-11%.
+
+Two things were tried and **reverted**, which is worth recording because the
+first one was right about the target and wrong about everything else. A
+pooled allocator using one *global* free list with a mutex per size bucket
+was 3.4x *slower* -- a contended global lock is strictly worse than the
+per-thread caching the Windows heap already does, across ~19 threads. Same
+idea, same target, wrong sharing model; the thread-local version above is
+what that attempt should have been. Toom-Cook-6/8 were scoped and declined:
+the Toom-3 -> Toom-4 step returned only 3.9% of wall time for a 13%
+arithmetic cut, and Toom-6/8 need 11 and 15 evaluation points against
+Toom-4's 7, so the per-call cost moves the wrong way faster than the
+asymptotics improve.
+
+No behavior outside `BigInt`/`Gcd` changed. The full selftest regression
+(`gcd`, `exponent`, `stage2plan`, `bounds`, `worktodo`, `engine`, `pm1`,
+`extend`, `pp1`, `stage2`, `b2extend`, `pp1stage2`) passes unchanged, with
+Toom-4's own differential tests added to gate G2 (1986 checks, up from 1914).
+
 ## 1.4
 
 **Exponents now come from `worktodo.txt`, and it can hold a queue.** Every

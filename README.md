@@ -19,8 +19,9 @@ source is still in this repository (see below) and builds the same way.
 
 | version | download | |
 |---|---|---|
-| **1.4** | *(source only — no release yet)* | current. Exponents now come from `worktodo.txt`, a queue processed in order, instead of a single `exponent =` in `config.txt` — build from source for now, see [1.4/README.md](1.4/README.md). |
-| 1.3 | [Mp_p-1_gpu-1.3-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.3/Mp_p-1_gpu-1.3-win64.zip) | P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. |
+| **1.5** | [Mp_p-1_gpu-1.5-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.5/Mp_p-1_gpu-1.5-win64.zip) | current. Speed release — the `gcd CPU` phase that ends each stage is about **2.4x faster** (parallel Toom-Cook-3, a thread-local allocator after profiling showed the gcd was allocator-bound, and Toom-Cook-4). Nothing about running it changed. |
+| 1.4 | *(source only)* | exponents come from `worktodo.txt`, a queue processed in order, instead of a single `exponent =` in `config.txt`. Kept as-is; see [1.4/README.md](1.4/README.md). |
+| 1.3 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.3) | P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. |
 | 1.2 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.2) | P+1 gained stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Kept as-is. |
 | 1.1 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.1) | raising B2 on a finished P-1 stage 2 reuses the completed accumulator and walks only the new range, instead of starting over. Kept as-is. |
 | 1.0 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.0) | first release. GPU P-1 with both stages, P+1 stage 1, automatic bound selection, checkpoint/resume, PrimeNet-format JSON results. Kept as-is. |
