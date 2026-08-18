@@ -81,38 +81,31 @@ inline u64 div128by64(u64 hi, u64 lo, u64 d, u64* rem) {
 const size_t KARATSUBA_LIMBS = 40;   // below this, schoolbook wins
 const size_t TOOM3_LIMBS = 8000;     // below this, Karatsuba wins -- tuned empirically
 
-// mulToom4 is measurably faster than mulToom3 in isolated single-multiply
-// benchmarks (1.2-1.4x from 8000 up to 1,000,000 limbs), but measurably
-// SLOWER in the real recursive gcdHalf workload it actually needs to serve
-// (production-scale gcdHalf: 229.5s with Toom-3 as the top tier vs 250s+
-// with Toom-4 active, reproduced repeatedly).
+// Tuned by measurement, and worth recording how, because for a while this
+// tier looked like a mistake.
 //
-// Profiled, not just guessed at: instrumented counters ruled out thread-
-// budget oversubscription (peak concurrent tasks tracked sane, ~19 on this
-// 20-thread machine, both configurations) and recursive call-count explosion
-// (schoolbook+Karatsuba call counts below the Toom tiers came out within 4%
-// of each other either way -- Toom-4's 4-way split does not visit the
-// recursion more than Toom-3's 3-way split does). Direct timing of just the
-// split+combine+interpolate+recombine work (excluding the recursive mul()
-// sub-calls) found it genuinely large -- around half of total wall time in
-// both tiers -- and found real, fixable redundancy: mulToom4's p1/pm1 and
-// p2/pm2 are +/- pairs of the same two partial sums, computed independently
-// twice each; mulToom3's p1/pm1 has the same pattern once. Sharing those
-// partial sums (see the pA02/pA13/pA04/pA28 locals below, and mulToom3's
-// pA02/pB02) cut combo-phase time by roughly 7-11%, verified by direct
-// re-measurement -- a real, differentially-tested improvement, kept
-// regardless of the outcome below.
+// mulToom4 was always faster than mulToom3 in isolated single-multiply
+// benchmarks (1.2-1.4x from 8000 up to 1,000,000 limbs), yet switching it on
+// made the real gcdHalf workload SLOWER (250s+ against a 229.5s Toom-3
+// baseline), so it shipped dormant. Hand-instrumented counters ruled out the
+// obvious suspects -- thread-budget oversubscription (peak concurrency was a
+// sane ~19 on this 20-thread machine either way) and recursion blow-up
+// (schoolbook+Karatsuba call counts below the Toom tiers agreed within 4%,
+// so the 4-way split does not visit the recursion more than the 3-way one).
 //
-// It was not enough: two post-fix production-scale runs (252.8s, 275.0s)
-// still did not beat the 229.5s Toom-3-only baseline. Whatever remains
-// costing Toom-4 the difference lives in the recursive sub-multiply work
-// itself, not the combination phase, and isolating that further needs a
-// real sampling profiler rather than more hand-instrumented counters. Set
-// high enough that mul() never reaches mulToom4 in practice, rather than
-// ship a regression; kept implemented, differentially tested, and now with
-// less redundant work than it shipped with, for whenever that profiling
-// happens.
-const size_t TOOM4_LIMBS = 10000000;
+// A real sampling profile found it: the workload was ALLOCATOR-bound, ~45% of
+// all CPU inside the heap versus ~53% in arithmetic. Toom-4 trades arithmetic
+// for temporaries, so it did exactly what it promises -- 12% fewer arithmetic
+// samples -- and lost anyway, because the temporaries cost more than the
+// arithmetic saved. Once Nat's allocator became a thread-local free list (see
+// Pool.h) the trade turned favourable and the advantage showed up as real
+// wall time: 143.1s and 143.0s across two runs, against a 148.8s Toom-3-only
+// baseline, with aggregate multiply CPU-time down 373s -> 325s.
+//
+// The lesson worth keeping: an isolated microbenchmark measured the tier
+// correctly and still predicted the wrong outcome, because it could not see
+// the cost the tier imposes on everything around it.
+const size_t TOOM4_LIMBS = 8000;
 
 } // namespace
 
