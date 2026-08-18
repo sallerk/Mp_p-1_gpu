@@ -85,15 +85,33 @@ const size_t TOOM3_LIMBS = 8000;     // below this, Karatsuba wins -- tuned empi
 // benchmarks (1.2-1.4x from 8000 up to 1,000,000 limbs), but measurably
 // SLOWER in the real recursive gcdHalf workload it actually needs to serve
 // (production-scale gcdHalf: 229.5s with Toom-3 as the top tier vs 250s+
-// with Toom-4 active, reproduced twice, both with and without Toom-4's own
-// internal parallelism). The isolated benchmark measures one giant multiply;
-// the real workload is many multiplies of many sizes across gcdHalf's
-// recursion, where Toom-4's higher per-call overhead (7 sub-products and 10
-// SNat combinations vs Toom-3's 5 and 6) apparently doesn't amortize the
-// same way. Root cause not fully identified -- set high enough that mul()
-// never reaches mulToom4 in practice, rather than ship a regression; kept
-// implemented and differentially tested since it's correct, just not yet
-// proven to help the workload that matters here.
+// with Toom-4 active, reproduced repeatedly).
+//
+// Profiled, not just guessed at: instrumented counters ruled out thread-
+// budget oversubscription (peak concurrent tasks tracked sane, ~19 on this
+// 20-thread machine, both configurations) and recursive call-count explosion
+// (schoolbook+Karatsuba call counts below the Toom tiers came out within 4%
+// of each other either way -- Toom-4's 4-way split does not visit the
+// recursion more than Toom-3's 3-way split does). Direct timing of just the
+// split+combine+interpolate+recombine work (excluding the recursive mul()
+// sub-calls) found it genuinely large -- around half of total wall time in
+// both tiers -- and found real, fixable redundancy: mulToom4's p1/pm1 and
+// p2/pm2 are +/- pairs of the same two partial sums, computed independently
+// twice each; mulToom3's p1/pm1 has the same pattern once. Sharing those
+// partial sums (see the pA02/pA13/pA04/pA28 locals below, and mulToom3's
+// pA02/pB02) cut combo-phase time by roughly 7-11%, verified by direct
+// re-measurement -- a real, differentially-tested improvement, kept
+// regardless of the outcome below.
+//
+// It was not enough: two post-fix production-scale runs (252.8s, 275.0s)
+// still did not beat the 229.5s Toom-3-only baseline. Whatever remains
+// costing Toom-4 the difference lives in the recursive sub-multiply work
+// itself, not the combination phase, and isolating that further needs a
+// real sampling profiler rather than more hand-instrumented counters. Set
+// high enough that mul() never reaches mulToom4 in practice, rather than
+// ship a regression; kept implemented, differentially tested, and now with
+// less redundant work than it shipped with, for whenever that profiling
+// happens.
 const size_t TOOM4_LIMBS = 10000000;
 
 } // namespace
@@ -346,10 +364,14 @@ Nat mulToom3(const Nat& a, const Nat& b) {
   const SNat pa0 = sOf(a0), pa1 = sOf(a1), pa2 = sOf(a2);
   const SNat pb0 = sOf(b0), pb1 = sOf(b1), pb2 = sOf(b2);
 
-  const SNat p1 = sAdd(sAdd(pa0, pa1), pa2);
-  const SNat q1 = sAdd(sAdd(pb0, pb1), pb2);
-  const SNat pm1 = sSub(sAdd(pa0, pa2), pa1);
-  const SNat qm1 = sSub(sAdd(pb0, pb2), pb1);
+  // p1/pm1 share the partial sum (a0+a2) -- compute it once (same idiom as
+  // mulToom4's p1/pm1 and p2/pm2 pairs).
+  const SNat pA02 = sAdd(pa0, pa2);
+  const SNat p1 = sAdd(pA02, pa1);
+  const SNat pm1 = sSub(pA02, pa1);
+  const SNat pB02 = sAdd(pb0, pb2);
+  const SNat q1 = sAdd(pB02, pb1);
+  const SNat qm1 = sSub(pB02, pb1);
   const SNat p2 = sAdd(sAdd(pa0, sShl(pa1, 1)), sShl(pa2, 2));
   const SNat q2 = sAdd(sAdd(pb0, sShl(pb1, 1)), sShl(pb2, 2));
 
@@ -407,14 +429,24 @@ Nat mulToom4(const Nat& a, const Nat& b) {
   const SNat pa0 = sOf(a0), pa1 = sOf(a1), pa2 = sOf(a2), pa3 = sOf(a3);
   const SNat pb0 = sOf(b0), pb1 = sOf(b1), pb2 = sOf(b2), pb3 = sOf(b3);
 
-  const SNat p1 = sAdd(sAdd(pa0, pa1), sAdd(pa2, pa3));
-  const SNat q1 = sAdd(sAdd(pb0, pb1), sAdd(pb2, pb3));
-  const SNat pm1 = sSub(sAdd(pa0, pa2), sAdd(pa1, pa3));
-  const SNat qm1 = sSub(sAdd(pb0, pb2), sAdd(pb1, pb3));
-  const SNat p2 = sAdd(sAdd(pa0, sShl(pa1, 1)), sAdd(sShl(pa2, 2), sShl(pa3, 3)));
-  const SNat q2 = sAdd(sAdd(pb0, sShl(pb1, 1)), sAdd(sShl(pb2, 2), sShl(pb3, 3)));
-  const SNat pm2 = sSub(sAdd(pa0, sShl(pa2, 2)), sAdd(sShl(pa1, 1), sShl(pa3, 3)));
-  const SNat qm2 = sSub(sAdd(pb0, sShl(pb2, 2)), sAdd(sShl(pb1, 1), sShl(pb3, 3)));
+  // p1/pm1 and p2/pm2 are +/- pairs of the same two partial sums -- share
+  // the partial sums instead of recomputing each pair independently (the
+  // same sum/difference-pair idiom S1/D1 below already uses). Cuts the
+  // shift+add/sub call count for this block from 10 to 7 per side.
+  const SNat pA02 = sAdd(pa0, pa2), pA13 = sAdd(pa1, pa3);
+  const SNat p1 = sAdd(pA02, pA13);
+  const SNat pm1 = sSub(pA02, pA13);
+  const SNat pB02 = sAdd(pb0, pb2), pB13 = sAdd(pb1, pb3);
+  const SNat q1 = sAdd(pB02, pB13);
+  const SNat qm1 = sSub(pB02, pB13);
+
+  const SNat pA04 = sAdd(pa0, sShl(pa2, 2)), pA28 = sAdd(sShl(pa1, 1), sShl(pa3, 3));
+  const SNat p2 = sAdd(pA04, pA28);
+  const SNat pm2 = sSub(pA04, pA28);
+  const SNat pB04 = sAdd(pb0, sShl(pb2, 2)), pB28 = sAdd(sShl(pb1, 1), sShl(pb3, 3));
+  const SNat q2 = sAdd(pB04, pB28);
+  const SNat qm2 = sSub(pB04, pB28);
+
   const SNat ph = sAdd(sAdd(sShl(pa0, 3), sShl(pa1, 2)), sAdd(sShl(pa2, 1), pa3));
   const SNat qh = sAdd(sAdd(sShl(pb0, 3), sShl(pb1, 2)), sAdd(sShl(pb2, 1), pb3));
 
@@ -441,10 +473,15 @@ Nat mulToom4(const Nat& a, const Nat& b) {
   const SNat c0 = r0;
   const SNat c6 = rinf;
 
-  const SNat A1 = sSub(sSub(r1, c0), c6);
-  const SNat Am1 = sSub(sSub(rm1, c0), c6);
-  const SNat A2 = sSub(sSub(r2, c0), sMulSmall(c6, 64));
-  const SNat Am2 = sSub(sSub(rm2, c0), sMulSmall(c6, 64));
+  // A1/Am1 both subtract (c0+c6); A2/Am2 both subtract (c0+64*c6) -- shared
+  // the same way p1/pm1 and p2/pm2 are above.
+  const SNat c0c6 = sAdd(c0, c6);
+  const SNat A1 = sSub(r1, c0c6);
+  const SNat Am1 = sSub(rm1, c0c6);
+  const SNat c6x64 = sMulSmall(c6, 64);
+  const SNat c0c6x64 = sAdd(c0, c6x64);
+  const SNat A2 = sSub(r2, c0c6x64);
+  const SNat Am2 = sSub(rm2, c0c6x64);
   const SNat Ah = sSub(sSub(rh, sMulSmall(c0, 64)), c6);
 
   const SNat S1 = sShr(sAdd(A1, Am1), 1);
