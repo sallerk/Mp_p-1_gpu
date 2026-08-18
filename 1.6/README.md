@@ -14,9 +14,11 @@ OpenCL SDK.
 > Ctrl-C, a crash, a reboot, anything that left a checkpoint and got restarted
 > -- reprocessed one exponent bit, silently corrupting the residue. This bug
 > is not new to 1.6: it has been present since the checkpoint/resume mechanism
-> was written, in every released version including 1.5 (whose binary is
-> patched in place for the same fix). If you have ever resumed a stage-1 run
-> from a checkpoint, its result should be treated as unverified.
+> was written, in every released version including 1.5 -- whose source is
+> patched in place for the same fix, but whose prebuilt binary has been
+> withdrawn rather than re-published; use 1.6 instead. If you have ever
+> resumed a stage-1 run from a checkpoint, its result should be treated as
+> unverified.
 >
 > Alongside the fix: stage 1 now checkpoints immediately on Ctrl-C instead of
 > only periodically; Ctrl-C is honored during the gcd phases too, which it

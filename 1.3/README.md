@@ -7,8 +7,9 @@ OpenCL SDK.
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [../ATTRIBUTION.md](../ATTRIBUTION.md).
 
-> This is the current release. What changed since 1.2 is in
-> [../CHANGELOG.md](../CHANGELOG.md).
+> This is the 1.3 release, kept exactly as it shipped. What changed since is in
+> [../CHANGELOG.md](../CHANGELOG.md); the current version is
+> [../1.6](../1.6/README.md).
 
 ---
 

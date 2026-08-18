@@ -7,8 +7,14 @@ OpenCL SDK.
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [../ATTRIBUTION.md](../ATTRIBUTION.md).
 
-> This is the current release. What changed since 1.4 is in
-> [../CHANGELOG.md](../CHANGELOG.md).
+> This is the 1.5 release, kept exactly as it shipped. What changed since is in
+> [../CHANGELOG.md](../CHANGELOG.md); the current version is
+> [../1.6](../1.6/README.md).
+
+> **This binary has a correctness bug, fixed in 1.6.** Resuming an
+> interrupted stage 1 (Ctrl-C, a crash, a reboot) reprocesses one exponent
+> bit, silently corrupting the residue. If you have ever resumed a stage-1
+> run from a checkpoint with this version, treat its result as unverified.
 
 > **1.5 is a speed release.** Nothing about how you run it changed. The gcd
 > that finishes each stage — the phase that prints `gcd CPU` and leaves the
@@ -19,9 +25,11 @@ OpenCL SDK.
 
 ## Download
 
-Take `Mp_p-1_gpu-1.5-win64.zip` from the
-[Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), unzip it
-anywhere, and run it. There is nothing to install:
+The 1.5 binary is no longer distributed — see the correctness-bug notice
+above; get [1.6](../1.6/README.md) instead. This source tree still builds
+and runs the same way it always did (see Build, below), for reference or
+bisection. When it was distributed, `Mp_p-1_gpu-1.5-win64.zip` needed
+nothing else installed:
 
 - **no Visual Studio and no compiler** — the C runtime is linked statically
 - **no OpenCL SDK** — OpenCL is loaded from your GPU driver at run time
