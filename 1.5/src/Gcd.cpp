@@ -38,7 +38,7 @@ u64 nanosSince(const Timer& t) {
 // Instrumentation: if the leading-limb loop never resolves a step, gcdLehmer
 // silently degenerates into plain Euclid and every test still passes while the
 // optimisation does nothing. These counters make that visible.
-std::function<void(size_t, size_t, u64)> gGcdProgress;
+std::function<bool(size_t, size_t, u64)> gGcdProgress;
 
 u64 gLehmerFastSteps = 0;
 u64 gLehmerFallbackDivisions = 0;
@@ -192,7 +192,12 @@ size_t gTopBits = 0, gStartBits = 0;
 
 void tick(u64 muls) {
   gMulCount += muls;
-  if (gGcdProgress) { gGcdProgress(gTopBits, gStartBits, gMulCount); }
+  // On the recursion spine only (see the comment above gMulCount) -- this
+  // never runs inside a runParallel worker task, so throwing here unwinds
+  // through an ordinary single-thread call chain, not across threads.
+  if (gGcdProgress && !gGcdProgress(gTopBits, gStartBits, gMulCount)) {
+    throw GcdAborted{};
+  }
 }
 
 struct Mat {
@@ -392,7 +397,7 @@ Nat gcdHalf(Nat a, Nat b) {
   while (!b.isZero() && a.bits() > DIRECT_BITS) {
     const size_t n = a.bits();
     gTopBits = n;
-    if (gGcdProgress) { gGcdProgress(n, startBits, gMulCount); }
+    if (gGcdProgress && !gGcdProgress(n, startBits, gMulCount)) { throw GcdAborted{}; }
     // Drive a down to half its length, then let the loop repeat.
     reduceRec(a, b, n / 2);
     if (cmp(a, b) < 0) { std::swap(a, b); }

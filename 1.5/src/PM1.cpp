@@ -51,8 +51,15 @@ static const char* ph(u32 n) {
 // gcd(v, M_p), reporting as it goes. Shared by stage 1 and stage 2 -- at these
 // sizes it runs for 10-20 minutes and would otherwise print nothing at all,
 // which looks exactly like a hang.
+// `interrupted` is set true, and the returned Nat is meaningless (Nat{}, not
+// a real gcd), if gInterrupted became set partway through: the ONLY place in
+// a run that could previously not be stopped by Ctrl-C, since gcdHalf's
+// progress hook used to be void-returning and had nothing to check. Every
+// caller must look at `interrupted` before touching the return value -- an
+// aborted gcd is not "no factor found," it is "no answer at all."
 static Nat gcdWithProgress(const Nat& v, const Nat& Mp, u32 phase, const char* what,
-                           bool showProgress, double& secsOut) {
+                           bool showProgress, double& secsOut, bool& interrupted) {
+  interrupted = false;
   printf("  [%s gcd CPU] gcd(%s, M_p), %zu bits -- CPU only, GPU idle from here\n",
          ph(phase), what, Mp.bits());
   fflush(stdout);
@@ -60,38 +67,50 @@ static Nat gcdWithProgress(const Nat& v, const Nat& Mp, u32 phase, const char* w
 
   Timer gcdReport;
   double gcdLast = -1e9;
-  if (showProgress) {
-    gGcdProgress = [&](size_t bitsNow, size_t bitsStart, u64 muls) {
-      const double el = gcdReport.at();
-      const bool tty = stdoutIsTerminal();
-      // The hook fires after every batch of multiplications, far too often to
-      // print, so throttle by wall time instead.
-      if (el - gcdLast < (tty ? 1.0 : 60.0)) { return; }
-      gcdLast = el;
-      // Weight by work, not by bits. The top-level operand HALVES each step, so
-      // a bits-linear percentage reads 0 / 50 / 75 with wildly uneven timing
-      // between steps. (n/N)^1.39 follows the measured cost curve, putting the
-      // bit-halfway point at ~62% done. The multiply counter climbs smoothly
-      // regardless, so the line always visibly moves.
-      const double frac = bitsStart
-          ? 1.0 - pow(double(bitsNow) / double(bitsStart), GCD_WORK_EXPONENT) : 0.0;
-      const double eta = frac > 0.02 ? el * (1.0 - frac) / frac : 0.0;
-      printf(tty ? "\r  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  "
-                   "elapsed %s  ETA %s   "
-                 : "  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  "
-                   "elapsed %s  ETA %s\n",
-             ph(phase), frac * 100, (unsigned long long) muls, bitsNow,
-             fmtDuration(el).c_str(), fmtDuration(eta).c_str());
-      fflush(stdout);
-    };
-  }
+  // Installed unconditionally, not just when showProgress -- the interrupt
+  // check below must run regardless of whether the progress LINE prints.
+  gGcdProgress = [&](size_t bitsNow, size_t bitsStart, u64 muls) -> bool {
+    if (gInterrupted.load()) { return false; }
+    if (!showProgress) { return true; }
+    const double el = gcdReport.at();
+    const bool tty = stdoutIsTerminal();
+    // The hook fires after every batch of multiplications, far too often to
+    // print, so throttle by wall time instead.
+    if (el - gcdLast < (tty ? 1.0 : 60.0)) { return true; }
+    gcdLast = el;
+    // Weight by work, not by bits. The top-level operand HALVES each step, so
+    // a bits-linear percentage reads 0 / 50 / 75 with wildly uneven timing
+    // between steps. (n/N)^1.39 follows the measured cost curve, putting the
+    // bit-halfway point at ~62% done. The multiply counter climbs smoothly
+    // regardless, so the line always visibly moves.
+    const double frac = bitsStart
+        ? 1.0 - pow(double(bitsNow) / double(bitsStart), GCD_WORK_EXPONENT) : 0.0;
+    const double eta = frac > 0.02 ? el * (1.0 - frac) / frac : 0.0;
+    printf(tty ? "\r  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  "
+                 "elapsed %s  ETA %s   "
+               : "  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  "
+                 "elapsed %s  ETA %s\n",
+           ph(phase), frac * 100, (unsigned long long) muls, bitsNow,
+           fmtDuration(el).c_str(), fmtDuration(eta).c_str());
+    fflush(stdout);
+    return true;
+  };
 
-  Nat g = v.isZero() ? Mp : gcd(v, Mp);
+  Nat g;
+  try {
+    g = v.isZero() ? Mp : gcd(v, Mp);
+  } catch (const GcdAborted&) {
+    interrupted = true;
+  }
   gGcdProgress = nullptr;
   if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 100, ""); }
 
   secsOut = gcdTimer.at();
-  printf("  [%s gcd CPU] done in %s\n", ph(phase), fmtDuration(secsOut).c_str());
+  if (interrupted) {
+    printf("  [%s gcd CPU] interrupted after %s\n", ph(phase), fmtDuration(secsOut).c_str());
+  } else {
+    printf("  [%s gcd CPU] done in %s\n", ph(phase), fmtDuration(secsOut).c_str());
+  }
   return g;
 }
 
@@ -475,7 +494,9 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
   // factor = gcd(x - 1, M_p). This is CPU work: the GPU is idle throughout,
   // which is why the phase is labelled -- an idle GPU here is normal, not a
   // stall.
-  Nat g = gcdWithProgress(res.xMinusOne, Mp, 3, "x-1", showProgress, res.gcdSecs);
+  Nat g = gcdWithProgress(res.xMinusOne, Mp, 3, "x-1", showProgress, res.gcdSecs,
+                          res.interrupted);
+  if (res.interrupted) { return res; }
 
   // A gcd of 1 means no factor; a gcd of M_p means the whole number divided
   // out, which happens only for a degenerate B1 and is not a useful result.
@@ -641,32 +662,12 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
     return res;
   }
 
-  printf("  [%s gcd CPU] gcd(V-2, M_p), %zu bits -- CPU only, GPU idle from here\n",
-         ph(3), Mp.bits());
-  fflush(stdout);
-  Timer gcdTimer;
-  Timer gcdReport;
-  double gcdLast = -1e9;
-  if (showProgress) {
-    gGcdProgress = [&](size_t bitsNow, size_t bitsStart, u64 muls) {
-      const double el = gcdReport.at();
-      const bool tty = stdoutIsTerminal();
-      if (el - gcdLast < (tty ? 1.0 : 60.0)) { return; }
-      gcdLast = el;
-      const double frac = bitsStart
-          ? 1.0 - pow(double(bitsNow) / double(bitsStart), GCD_WORK_EXPONENT) : 0.0;
-      printf(tty ? "\r  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  elapsed %s   "
-                 : "  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  elapsed %s\n",
-             ph(3), frac * 100, (unsigned long long) muls, bitsNow,
-             fmtDuration(el).c_str());
-      fflush(stdout);
-    };
-  }
-  Nat g = gcd(vm2, Mp);
-  gGcdProgress = nullptr;
-  if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 100, ""); }
-  res.gcdSecs = gcdTimer.at();
-  printf("  [%s gcd CPU] done in %s\n", ph(3), fmtDuration(res.gcdSecs).c_str());
+  // Was its own hand-copied inline duplicate of gcdWithProgress -- which
+  // meant it also had its own, separate copy of the bug where the gcd could
+  // not be interrupted (see gcdWithProgress's own comment). Routed through
+  // the shared helper now instead of fixing the duplicate in parallel.
+  Nat g = gcdWithProgress(vm2, Mp, 3, "V-2", showProgress, res.gcdSecs, res.interrupted);
+  if (res.interrupted) { return res; }
 
   if (!g.isOne() && cmp(g, Mp) != 0) {
     res.foundFactor = true;
@@ -871,7 +872,8 @@ PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
   Nat acc = fromWords(accWords);
   if (acc.isZero()) { acc = Mp; }
 
-  Nat g = gcdWithProgress(acc, Mp, 5, "acc", showProgress, res.gcdSecs);
+  Nat g = gcdWithProgress(acc, Mp, 5, "acc", showProgress, res.gcdSecs, res.interrupted);
+  if (res.interrupted) { return res; }
 
   if (!g.isOne() && cmp(g, Mp) != 0) {
     res.foundFactor = true;
@@ -1150,7 +1152,8 @@ PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Res
   Nat acc = fromWords(accWords);
   if (acc.isZero()) { acc = Mp; }
 
-  Nat g = gcdWithProgress(acc, Mp, 5, "acc", showProgress, res.gcdSecs);
+  Nat g = gcdWithProgress(acc, Mp, 5, "acc", showProgress, res.gcdSecs, res.interrupted);
+  if (res.interrupted) { return res; }
 
   if (!g.isOne() && cmp(g, Mp) != 0) {
     res.foundFactor = true;
