@@ -253,6 +253,48 @@ int runBigIntTests() {
     check(gcdHalf(a, b) == gcdLehmer(a, b), "gcdHalf == gcdLehmer (planted, large)");
   }
 
+  // --- half-GCD: does gGcdProgress returning false actually abort it? ------
+  // Real bug this guards: gGcdProgress used to be void-returning, so nothing
+  // in gcdHalf could ever be told to stop -- Ctrl-C during a gcd (the
+  // longest phase) was silently ignored until it finished on its own. Proves
+  // three things with a real, production-shaped gcd (not a trivial size
+  // where the recursion never gets exercised): the hook fires more than
+  // once, an abort partway through throws GcdAborted, and the abort returns
+  // in a small fraction of the time a full run takes -- not merely "less
+  // time" (which a same-scale coincidence could satisfy) but decisively less.
+  printf("\n  gcd abort via gGcdProgress\n");
+  {
+    const size_t limbs = 32000;
+    Nat a = randomNat(rng, limbs), b = randomNat(rng, limbs);
+    if (cmp(a, b) < 0) { std::swap(a, b); }
+
+    Timer fullTimer;
+    Nat full = gcdHalf(a, b);
+    const double fullSecs = fullTimer.at();
+
+    u64 calls = 0;
+    gGcdProgress = [&](size_t, size_t, u64) -> bool {
+      ++calls;
+      return calls < 3;  // let a couple of ticks through, then abort
+    };
+    bool aborted = false;
+    Timer abortTimer;
+    try {
+      gcdHalf(a, b);
+    } catch (const GcdAborted&) {
+      aborted = true;
+    }
+    const double abortSecs = abortTimer.at();
+    gGcdProgress = nullptr;
+
+    check(calls >= 3, "gGcdProgress hook actually fires repeatedly during a real gcd");
+    check(aborted, "gcdHalf throws GcdAborted when the hook returns false");
+    check(abortSecs < fullSecs * 0.5,
+          "aborted gcd (" + to_string(abortSecs) + "s) returns well before a full run (" +
+          to_string(fullSecs) + "s), not after finishing anyway");
+    (void) full;
+  }
+
   // --- half-GCD: is it actually subquadratic? ------------------------------
   // Also reports the real mul-vs-div time split (gMulNanos/gDivNanos, see
   // Gcd.h) at each scale, up to the exact bit length of M82589933 -- the

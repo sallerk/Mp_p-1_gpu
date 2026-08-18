@@ -662,6 +662,15 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     }
     printf("\n");
 
+    // The background gcd is the only part of this overlapped path that could
+    // not previously be told to stop; see Gcd.h's GcdAborted. Bail before
+    // treating r as a real answer -- foundFactor/factors are meaningless when
+    // interrupted, same as the non-overlapped check just above this function.
+    if (r.interrupted) {
+      log("\n  interrupted during the overlapped gcd; resume by running again.\n");
+      return 1;
+    }
+
     printf("\n");
     if (r.foundFactor) {
       // Stage 1 had it all along. Whatever stage 2 computed meanwhile is

@@ -50,7 +50,29 @@ Nat gcdHalf(Nat a, Nat b);
 // started on a thread that never installed one simply reports nothing.
 // gcdHalf's own worker threads are unaffected: progress is ticked on the
 // recursion spine, not in the offloaded multiplications.
-extern thread_local std::function<void(size_t bitsNow, size_t bitsStart, u64 muls)> gGcdProgress;
+//
+// Return false to abort: gcdHalf throws GcdAborted from the next call site it
+// reaches, on the SAME thread (each thread's hook only ever sees that
+// thread's own gcd, so the throw unwinds a normal single-thread call chain
+// even with two gcds concurrently in flight). This is the ONLY way to stop a
+// gcd early -- there is no partial result and no checkpoint format for one.
+// Before this existed, the gcd phases were the only part of a run Ctrl-C
+// could not stop: a full gcd is minutes, the GPU phases already checked an
+// equivalent hook every reportEvery iterations, and a request to stop mid-gcd
+// was silently ignored until it finished on its own -- at which point the job
+// looked like it had completed normally and (with a stage 2 configured) got
+// removed from worktodo.txt without ever writing a result. See PM1.cpp's
+// gcdWithProgress for where this is wired to the real interrupt flag, and
+// main.cpp's finishStage1Gcd for the overlapped background gcd's own join.
+extern thread_local std::function<bool(size_t bitsNow, size_t bitsStart, u64 muls)> gGcdProgress;
+
+// Thrown by gcdHalf (via the tick() and top-of-loop call sites) when
+// gGcdProgress returns false. Caught by whoever installed the hook -- gcdHalf
+// itself has no notion of "interrupted," only "the hook said stop." Callers
+// that do not install a hook (differential tests, --selftest, etc.) never see
+// this: gGcdProgress defaults to empty, and an empty std::function is never
+// called at all, let alone returns false.
+struct GcdAborted {};
 
 // Measured cost exponent of gcdHalf (4x size -> ~6.9x time). Work done by the
 // time the operands have shrunk from N to n is about 1 - (n/N)^GCD_WORK_EXPONENT,
