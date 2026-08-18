@@ -594,7 +594,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   PM1Result r = runPM1Stage1(*gpu, cfg, b1, true, !overlapGcd);
 
   if (r.interrupted) {
-    log("\n  interrupted before stage 1 completed; nothing written.\n");
+    log("\n  interrupted; P-1 stage 1 progress is checkpointed.\n");
     return 1;
   }
 
@@ -603,7 +603,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // stage 2's would otherwise interleave on the same terminal.
   std::future<void> gcdTask;
   if (overlapGcd && !gInterrupted.load()) {
-    printf("\n  [%u/5 gcd CPU] gcd(x-1, M_p) running alongside stage 2 --"
+    printf("  [%u/5 gcd CPU] gcd(x-1, M_p) running alongside stage 2 --"
            " reported when both finish\n", 3);
     fflush(stdout);
     gcdTask = std::async(std::launch::async,

@@ -1305,13 +1305,21 @@ Words Gpu::powBase3(const vector<u64>& expLimbs, u32 reportEvery,
   assert(nBits > 0);
 
   // Fresh start: seed with the base, consuming E's (always set) top bit.
-  // Resuming: the saved residue already accounts for every bit above resumeBit,
-  // so the loop restarts at resumeBit itself.
+  // Resuming: the saved residue already accounts for bit resumeBit itself --
+  // it is saved AFTER that bit's square() runs, as "the bit this iteration
+  // just finished" -- so the loop must restart one bit BELOW resumeBit, not
+  // at it. (Previously this read `resumeBit + 1`, which made the resumed
+  // loop's first iteration process resumeBit again: one bit of the exponent
+  // silently applied twice, corrupting the residue. Caught by a real
+  // interrupt-then-resume selftest that nothing previously exercised --
+  // extending a COMPLETE stage 1 to a higher B1, which the existing tests
+  // did cover, never resumes a PARTIAL walk, so it could not have caught
+  // this.)
   size_t startBit;
   if (resumeFrom) {
     assert(resumeBit + 1 < nBits);
     writeIn(bufData, *resumeFrom);
-    startBit = size_t(resumeBit) + 1;
+    startBit = size_t(resumeBit);
   } else {
     writeIn(bufData, makeWords(E, 3));
     startBit = nBits - 1;
@@ -1327,9 +1335,17 @@ Words Gpu::powBase3(const vector<u64>& expLimbs, u32 reportEvery,
 
     // A checkpoint has to read bufData, but with leadOut == LEAD_WIDTH the live
     // value sits in the transform buffers and bufData is stale. So force a full
-    // carry on the iteration that precedes a save.
-    const bool wantSave = saveEvery && save && ((done + 1) % saveEvery == 0);
-    enum LEAD_TYPE leadOut = (useLongCarry || last || wantSave) ? LEAD_NONE : LEAD_WIDTH;
+    // carry on the iteration that precedes a save -- and, when checkpointing is
+    // on, also on the iteration that precedes a report check, since that is the
+    // only place an interrupt gets noticed. Without this, Ctrl-C between two
+    // scheduled saves had nothing valid to write and silently discarded up to
+    // saveEvery squarings' worth of work; forcing it here costs one full carry
+    // every reportEvery squarings (negligible) instead.
+    const bool checkpointing = saveEvery && save;
+    const bool wantSave = checkpointing && ((done + 1) % saveEvery == 0);
+    const bool wantCheck = reportEvery && ((done + 1) % reportEvery == 0);
+    enum LEAD_TYPE leadOut =
+        (useLongCarry || last || wantSave || (wantCheck && checkpointing)) ? LEAD_NONE : LEAD_WIDTH;
 
     square(bufData, bufData, leadIn, leadOut, bit, false);
     leadIn = leadOut;
@@ -1340,9 +1356,12 @@ Words Gpu::powBase3(const vector<u64>& expLimbs, u32 reportEvery,
       save(readData(), u64(bi));      // bi == the next bit still to process
     }
 
-    if (reportEvery && done % reportEvery == 0) {
+    if (wantCheck) {
       queue->finish();
-      if (!progress(done, total)) { break; }   // interrupted
+      if (!progress(done, total)) {   // interrupted
+        if (checkpointing) { save(readData(), u64(bi)); }
+        break;
+      }
     }
   }
 
@@ -1369,11 +1388,14 @@ Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
   Buffer<Word>& B = bufs[1];      // V_{k+1}
   Buffer<Word>& T = bufs[2];
 
+  // See powBase3's identical resume comment: resumeBit's bit is already
+  // folded into resumeA/resumeB, so the loop restarts one bit below it, not
+  // at it -- the `+ 1` here reprocessed that bit a second time on resume.
   size_t startBit;
   if (resumeA && resumeB) {
     writeIn(A, *resumeA);
     writeIn(B, *resumeB);
-    startBit = size_t(resumeBit) + 1;
+    startBit = size_t(resumeBit);
   } else {
     // The leading bit of exp is consumed by starting at k = 1:
     //   A = V_1 = seed,  B = V_2 = seed^2 - 2.
@@ -1404,14 +1426,18 @@ Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
     ++done;
 
     // Both A and B are always fully carried here (the ladder uses LEAD_NONE
-    // throughout), so a checkpoint can read them without any extra work.
+    // throughout), so a checkpoint can read them without any extra work -- on
+    // interrupt as much as on a scheduled save.
     if (saveEvery && save && done % saveEvery == 0) {
       queue->finish();
       save(readAndCompress(A), readAndCompress(B), u64(bi));
     }
     if (reportEvery && done % reportEvery == 0) {
       queue->finish();
-      if (!progress(done, total)) { break; }
+      if (!progress(done, total)) {
+        if (saveEvery && save) { save(readAndCompress(A), readAndCompress(B), u64(bi)); }
+        break;
+      }
     }
   }
 
@@ -1454,11 +1480,14 @@ Words Gpu::powResidue(const Words& base, const vector<u64>& expLimbs,
     fftMidIn(bufBase, bufBase);
   }
 
+  // See powBase3's identical resume comment: resumeBit's bit is already
+  // folded into resumeFrom, so the loop restarts one bit below it, not at
+  // it -- the `+ 1` here reprocessed that bit a second time on resume.
   size_t startBit;
   if (resumeFrom) {
     assert(resumeBit + 1 < nBits);
     writeIn(bufData, *resumeFrom);
-    startBit = size_t(resumeBit) + 1;
+    startBit = size_t(resumeBit);
   } else {
     writeIn(bufData, base);                    // top bit of R is always set
     startBit = nBits - 1;
