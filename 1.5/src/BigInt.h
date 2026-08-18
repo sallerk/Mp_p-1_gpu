@@ -13,12 +13,15 @@
 #pragma once
 
 #include "common.h"
+#include "Pool.h"
 
 #include <string>
 #include <vector>
 
 struct Nat {
-  std::vector<u64> w;
+  // Pooled allocator, not the default: sampling-profiling showed the heap is
+  // ~45% of this workload's total CPU time. See Pool.h.
+  std::vector<u64, PoolAlloc<u64>> w;
 
   Nat() = default;
   explicit Nat(u64 v) { if (v) { w.push_back(v); } }
@@ -33,6 +36,11 @@ struct Nat {
   bool bit(size_t i) const;
 
   bool isOne() const { return w.size() == 1 && w[0] == 1; }
+
+  // A plain std::vector<u64> copy. The GPU exponent-upload path takes a
+  // default-allocator vector; Nat::w's allocator is pooled, so those few call
+  // sites convert here rather than templating the whole Gpu interface.
+  std::vector<u64> toVector() const { return std::vector<u64>(w.begin(), w.end()); }
 
   std::string hex() const;
   std::string dec() const;   // decimal, which is how factors are conventionally reported

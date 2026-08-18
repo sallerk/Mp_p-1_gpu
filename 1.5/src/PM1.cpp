@@ -289,7 +289,7 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
   printf("%zu bits (%s)\n", E.bits(), fmtDuration(buildTimer.at()).c_str());
 
   // The ladder wants little-endian 64-bit limbs.
-  const vector<u64>& limbs = E.w;
+  const vector<u64> limbs = E.toVector();
 
   Timer stage1;
   Timer sinceReport;
@@ -428,7 +428,7 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
            fmtDuration(rTimer.at()).c_str());
 
     want.baseB1 = extendFrom;
-    x = gpu.powResidue(extBase, R.w, cfg.reportEvery, progress,
+    x = gpu.powResidue(extBase, R.toVector(), cfg.reportEvery, progress,
                        nullptr, 0, saveEverySquarings, saveFn);
     res.squarings = R.bits() ? R.bits() - 1 : 0;
   } else {
@@ -598,7 +598,7 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
   if (alreadyComplete) {
     v = loaded.residue;
   } else {
-    v = gpu.lucasV(seed, E.w, cfg.reportEvery, progress, rA, rB, resumeBit,
+    v = gpu.lucasV(seed, E.toVector(), cfg.reportEvery, progress, rA, rB, resumeBit,
                    saveEverySteps, saveFn);
     res.squarings = E.bits() ? E.bits() - 1 : 0;
   }

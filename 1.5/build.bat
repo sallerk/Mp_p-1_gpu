@@ -82,6 +82,7 @@ set SRCS=^
  src\BigInt.cpp ^
  src\Gcd.cpp ^
  src\Parallel.cpp ^
+ src\Pool.cpp ^
  src\testBigInt.cpp ^
  src\Bounds.cpp ^
  src\Config.cpp ^

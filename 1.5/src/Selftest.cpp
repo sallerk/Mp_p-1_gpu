@@ -214,7 +214,7 @@ int runPP1Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
     auto quiet = [](u64, u64) { return true; };
 
     Timer t;
-    Words v = gpu->lucasV(c.seed, E.w, 0, quiet);
+    Words v = gpu->lucasV(c.seed, E.toVector(), 0, quiet);
     const u64 got = res64(v);
     const bool ok = got == c.want;
     check(ok, "P+1 V_E at E=" + to_string(c.exponent) + " B1=" + to_string(c.b1));
@@ -268,12 +268,12 @@ int runExtendTests(GpuCommon shared, Queue* q, const string& fftSpec) {
     const Nat r = stage1ExponentDelta(b1From, b1To, p);
 
     Timer t1;
-    Words xFrom = gpu->powBase3(eFrom.w, 0, quiet);
-    Words xTo = gpu->powBase3(eTo.w, 0, quiet);
+    Words xFrom = gpu->powBase3(eFrom.toVector(), 0, quiet);
+    Words xTo = gpu->powBase3(eTo.toVector(), 0, quiet);
     const double freshSecs = t1.at();
 
     Timer t2;
-    Words extended = gpu->powResidue(xFrom, r.w, 0, quiet);
+    Words extended = gpu->powResidue(xFrom, r.toVector(), 0, quiet);
     const double extSecs = t2.at();
 
     const bool ok = extended == xTo;
