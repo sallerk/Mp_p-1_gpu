@@ -42,7 +42,15 @@ Nat gcdHalf(Nat a, Nat b);
 // Reporting purely by bitsNow is misleading: the top-level size halves, so a
 // bits-linear percentage jumps 0 -> 50 -> 75 with each step taking a quarter
 // the time of the last. Callers should weight by work; see GCD_WORK_EXPONENT.
-extern std::function<void(size_t bitsNow, size_t bitsStart, u64 muls)> gGcdProgress;
+// thread_local, and that is load-bearing rather than tidiness. Since 1.6 the
+// driver can have TWO gcds in flight at once (stage 1's, overlapped with stage
+// 2, plus stage 2's own). A single global hook would mean one gcd invoking the
+// other's callback -- a lambda capturing the other call's locals by reference,
+// on the wrong thread. Per-thread, each gcd sees only its own hook, and a gcd
+// started on a thread that never installed one simply reports nothing.
+// gcdHalf's own worker threads are unaffected: progress is ticked on the
+// recursion spine, not in the offloaded multiplications.
+extern thread_local std::function<void(size_t bitsNow, size_t bitsStart, u64 muls)> gGcdProgress;
 
 // Measured cost exponent of gcdHalf (4x size -> ~6.9x time). Work done by the
 // time the operands have shrunk from N to n is about 1 - (n/N)^GCD_WORK_EXPONENT,

@@ -156,7 +156,8 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
 // factor / gcdValue / factors / gcdSecs; touches no GPU state, so it is safe
 // to run on another thread while the GPU works (which is what the driver does
 // to overlap it with stage 2).
-void finishStage1Gcd(PM1Result& res, u32 exponent, bool showProgress);
+void finishStage1Gcd(PM1Result& res, u32 exponent, bool showProgress,
+                     bool announce = true);
 
 // Human-readable duration, matching mersenne_tf: 45s, 12m34s, 1h23m, 3d04h.
 std::string fmtDuration(double secs);

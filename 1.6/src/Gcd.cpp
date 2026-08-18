@@ -38,7 +38,7 @@ u64 nanosSince(const Timer& t) {
 // Instrumentation: if the leading-limb loop never resolves a step, gcdLehmer
 // silently degenerates into plain Euclid and every test still passes while the
 // optimisation does nothing. These counters make that visible.
-std::function<void(size_t, size_t, u64)> gGcdProgress;
+thread_local std::function<void(size_t, size_t, u64)> gGcdProgress;
 
 u64 gLehmerFastSteps = 0;
 u64 gLehmerFallbackDivisions = 0;
@@ -187,8 +187,8 @@ namespace {
 
 // Progress bookkeeping. Updated on the recursion spine (only the individual
 // multiplications are offloaded to workers), so no locking is needed.
-u64 gMulCount = 0;
-size_t gTopBits = 0, gStartBits = 0;
+thread_local u64 gMulCount = 0;
+thread_local size_t gTopBits = 0, gStartBits = 0;
 
 void tick(u64 muls) {
   gMulCount += muls;

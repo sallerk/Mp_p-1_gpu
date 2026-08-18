@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.6 (in development)
+
+**The stage-1 gcd now runs while the GPU does stage 2.** Not a faster gcd --
+the same gcd, moved off the critical path. It was CPU-only work with the card
+sitting idle, and at M82589933 that is ~184s of a 613s run during which the
+GPU does nothing at all.
+
+Stage 2 never needed the gcd's *answer*. It continues from the stage-1
+residue, which is ready the moment stage 1 ends; it only needs to know
+whether a factor turned up, because a factor in hand makes stage 2 pointless.
+So the driver starts the gcd on another thread and goes straight into stage 2.
+Measured on the same job: **613s -> 470s**, 137s saved, with the stage-2
+accumulator residue bit-identical to 1.4 and 1.5.
+
+It is a speculation, and the odds are on the record -- the bounds model prints
+its own stage-1 success estimate, typically a few percent. In the ~97% of jobs
+where the gcd finds nothing the overlap is free. In the rest the stage-2 work
+done so far is discarded, but a factor was found and the job ends successfully
+anyway: losing that race is the good outcome. The saving is bounded by stage
+2's own duration, so it is largest exactly where it matters -- big exponents,
+where both phases are long.
+
+Nothing is reported until the gcd lands. Announcing "no factor found with B1"
+while it is still running would be a guess rather than a result, so the
+stage-1 report moved after the join, and the overlapped gcd runs silent so its
+progress line and stage 2's cannot interleave on one terminal.
+
+**A latent data race, made reachable by the above, is fixed.** `gGcdProgress`
+was a plain global: stage 2's gcd installs a callback capturing its own locals
+by reference, and with two gcds now genuinely concurrent the other one could
+invoke it from the wrong thread. That was safe for exactly as long as only one
+gcd could be running, which was true until this release. The hook and its
+bookkeeping counters are `thread_local` now.
+
 ## 1.5
 
 **The gcd is about 2.4x faster.** Nothing about running the program changed --

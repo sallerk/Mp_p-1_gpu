@@ -607,7 +607,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
            " reported when both finish\n", 3);
     fflush(stdout);
     gcdTask = std::async(std::launch::async,
-                         [&r, &cfg] { finishStage1Gcd(r, cfg.exponent, false); });
+                         [&r, &cfg] { finishStage1Gcd(r, cfg.exponent, false, /*announce=*/false); });
   }
 
   // Reported only once the gcd has actually answered. When it is overlapped

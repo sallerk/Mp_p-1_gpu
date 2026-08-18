@@ -51,11 +51,18 @@ static const char* ph(u32 n) {
 // gcd(v, M_p), reporting as it goes. Shared by stage 1 and stage 2 -- at these
 // sizes it runs for 10-20 minutes and would otherwise print nothing at all,
 // which looks exactly like a hang.
+// `announce` off means print nothing at all -- not the header, not the closing
+// "done in". The overlapped stage-1 gcd needs that: it runs while stage 2 owns
+// the terminal, so its lines would land in the middle of stage 2's, and its
+// header would claim the GPU is idle when stage 2 is in fact driving it. The
+// caller prints the summary once both have finished.
 static Nat gcdWithProgress(const Nat& v, const Nat& Mp, u32 phase, const char* what,
-                           bool showProgress, double& secsOut) {
-  printf("  [%s gcd CPU] gcd(%s, M_p), %zu bits -- CPU only, GPU idle from here\n",
-         ph(phase), what, Mp.bits());
-  fflush(stdout);
+                           bool showProgress, double& secsOut, bool announce = true) {
+  if (announce) {
+    printf("  [%s gcd CPU] gcd(%s, M_p), %zu bits -- CPU only, GPU idle from here\n",
+           ph(phase), what, Mp.bits());
+    fflush(stdout);
+  }
   Timer gcdTimer;
 
   Timer gcdReport;
@@ -91,7 +98,9 @@ static Nat gcdWithProgress(const Nat& v, const Nat& Mp, u32 phase, const char* w
   if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 100, ""); }
 
   secsOut = gcdTimer.at();
-  printf("  [%s gcd CPU] done in %s\n", ph(phase), fmtDuration(secsOut).c_str());
+  if (announce) {
+    printf("  [%s gcd CPU] done in %s\n", ph(phase), fmtDuration(secsOut).c_str());
+  }
   return g;
 }
 
@@ -480,14 +489,14 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
 // another thread while the GPU gets on with stage 2. Everything it needs is
 // already in `res` by the time stage 1 returns (xMinusOne is always
 // populated), and it writes only into `res`, so the two do not interact.
-void finishStage1Gcd(PM1Result& res, u32 exponent, bool showProgress) {
+void finishStage1Gcd(PM1Result& res, u32 exponent, bool showProgress, bool announce) {
   const Nat Mp = mersenne(exponent);
 
   // factor = gcd(x - 1, M_p). This is CPU work. Historically the GPU was idle
   // throughout, which is why the phase is labelled; when the driver overlaps
   // it with stage 2 the GPU is busy instead and this prints nothing until it
   // finishes, to keep the two phases' output from interleaving.
-  Nat g = gcdWithProgress(res.xMinusOne, Mp, 3, "x-1", showProgress, res.gcdSecs);
+  Nat g = gcdWithProgress(res.xMinusOne, Mp, 3, "x-1", showProgress, res.gcdSecs, announce);
 
   // A gcd of 1 means no factor; a gcd of M_p means the whole number divided
   // out, which happens only for a degenerate B1 and is not a useful result.
