@@ -185,6 +185,49 @@ int runPM1Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
            firstExponent, g.hex().c_str(), fmtDuration(t.at()).c_str());
   }
 
+  printf("\n  C. interrupt and resume reproduce an uninterrupted ladder exactly\n");
+  {
+    // Real bug this guards: resume used to restart at `resumeBit + 1`, but
+    // resumeBit's bit is the one THIS iteration just squared -- already
+    // folded into the saved residue -- so restarting past it reprocessed it a
+    // second time, corrupting the residue. saveEvery == reportEvery makes the
+    // periodic checkpoint and the interrupt check land on the SAME iteration,
+    // so the captured residue is exactly what a real Ctrl-C-then-resume would
+    // see, using only the pre-existing checkpoint path (no new machinery).
+    const u32 p = 86599237;
+    const u64 b1 = 2000;
+    FFTConfig fft = smallestFFT(p, fftSpec);
+    auto gpu = Gpu::make(q, p, shared, fft, {}, false);
+    const Nat E = stage1Exponent(b1, p);
+    auto always = [](u64, u64) { return true; };
+
+    const Words full = gpu->powBase3(E.toVector(), 0, always);
+
+    const u64 total = E.bits() ? E.bits() - 1 : 0;
+    const u64 stopAfter = std::max<u64>(1, total / 2);
+    u64 seen = 0;
+    Words savedResidue;
+    u64 savedBit = ~0ull;
+    bool saveCalled = false;
+    auto stopHalfway = [&](u64 done, u64) { seen = done; return done < stopAfter; };
+    auto captureSave = [&](const Words& w, u64 bit) {
+      savedResidue = w; savedBit = bit; saveCalled = true;
+    };
+    gpu->powBase3(E.toVector(), u32(stopAfter), stopHalfway, nullptr, 0,
+                 u32(stopAfter), captureSave);
+
+    const bool stoppedEarly = saveCalled && seen >= stopAfter;
+    check(stoppedEarly, "the ladder actually stopped before completion, and checkpointed");
+
+    const Words resumed = gpu->powBase3(E.toVector(), 0, always, &savedResidue, savedBit);
+    const bool ok = stoppedEarly && (resumed == full);
+    check(ok, "resumed ladder matches an uninterrupted run");
+    printf("     %s  M%u B1=%llu  stopped at %llu/%llu, resumed  full res64=%016llx  resumed res64=%016llx\n",
+           ok ? "PASS" : "FAIL", p, (unsigned long long) b1,
+           (unsigned long long) seen, (unsigned long long) total,
+           (unsigned long long) res64(full), (unsigned long long) res64(resumed));
+  }
+
   printf("\nG3: %d failed.\n\n", failures - before);
   return failures == before ? 0 : 1;
 }
@@ -222,6 +265,47 @@ int runPP1Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
            ok ? "PASS" : "FAIL", c.exponent, (unsigned long long) c.b1, c.seed,
            (unsigned long long) got, E.bits(), t.at());
     if (!ok) { printf("        expected %016llx\n", (unsigned long long) c.want); }
+  }
+
+  printf("\n  interrupt and resume reproduce an uninterrupted ladder exactly\n");
+  {
+    // Same bug as powBase3's gate C: resume restarted at `resumeBit + 1`,
+    // reprocessing the already-saved bit. saveEvery == reportEvery lands the
+    // periodic checkpoint and the interrupt check on the same iteration, so
+    // this exercises the real (pre-existing) checkpoint path exactly.
+    const u32 p = 859433;
+    const u64 b1 = 500;
+    const u32 seed = 3;
+    FFTConfig fft = smallestFFT(p, fftSpec);
+    auto gpu = Gpu::make(q, p, shared, fft, {}, false);
+    const Nat E = stage1Exponent(b1, p);
+    auto always = [](u64, u64) { return true; };
+
+    const Words full = gpu->lucasV(seed, E.toVector(), 0, always);
+
+    const u64 total = E.bits() ? E.bits() - 1 : 0;
+    const u64 stopAfter = std::max<u64>(1, total / 2);
+    u64 seen = 0;
+    Words savedA, savedB;
+    u64 savedBit = ~0ull;
+    bool saveCalled = false;
+    auto stopHalfway = [&](u64 done, u64) { seen = done; return done < stopAfter; };
+    auto captureSave = [&](const Words& a, const Words& b, u64 bit) {
+      savedA = a; savedB = b; savedBit = bit; saveCalled = true;
+    };
+    gpu->lucasV(seed, E.toVector(), u32(stopAfter), stopHalfway, nullptr, nullptr, 0,
+               u32(stopAfter), captureSave);
+
+    const bool stoppedEarly = saveCalled && seen >= stopAfter;
+    check(stoppedEarly, "the ladder actually stopped before completion, and checkpointed");
+
+    const Words resumed = gpu->lucasV(seed, E.toVector(), 0, always, &savedA, &savedB, savedBit);
+    const bool ok = stoppedEarly && (resumed == full);
+    check(ok, "resumed ladder matches an uninterrupted run");
+    printf("     %s  M%u B1=%llu seed=%u  stopped at %llu/%llu  full res64=%016llx  resumed res64=%016llx\n",
+           ok ? "PASS" : "FAIL", p, (unsigned long long) b1, seed,
+           (unsigned long long) seen, (unsigned long long) total,
+           (unsigned long long) res64(full), (unsigned long long) res64(resumed));
   }
 
   printf("\nM4: %d failed.\n\n", failures - before);
