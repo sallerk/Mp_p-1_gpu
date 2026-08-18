@@ -78,7 +78,7 @@ inline u64 div128by64(u64 hi, u64 lo, u64 d, u64* rem) {
 #endif
 }
 
-const size_t KARATSUBA_LIMBS = 40;   // below this, schoolbook wins
+const size_t KARATSUBA_LIMBS = 48;   // below this, schoolbook wins -- re-measured for 1.6
 const size_t TOOM3_LIMBS = 8000;     // below this, Karatsuba wins -- tuned empirically
 
 // Tuned by measurement, and worth recording how, because for a while this
@@ -236,13 +236,17 @@ Nat mulSchoolbook(const Nat& a, const Nat& b) {
     const u64 ai = a.w[i];
     for (size_t j = 0; j < b.size(); ++j) {
       u64 hi, lo = mul64(ai, b.w[j], &hi);
-      // r[i+j] += lo + carry, propagating into hi
-      unsigned char c = 0;
+      // r[i+j] += lo + carry, propagating into hi.
+      //
+      // Fold the incoming carry into `lo` FIRST, in registers, so the
+      // accumulator is read-modify-written once instead of twice. The obvious
+      // ordering -- add lo to r[i+j], then add carry to r[i+j] -- costs a
+      // second dependent load/store of the same word, and this is the loop the
+      // profile puts ~37% of all samples in, at ~740M calls.
+      unsigned char c = addc(0, lo, carry, &lo);
+      hi += c;                        // cannot overflow: hi <= 2^64-2 here
       c = addc(0, r.w[i + j], lo, &r.w[i + j]);
-      hi += c;
-      c = addc(0, r.w[i + j], carry, &r.w[i + j]);
-      hi += c;
-      carry = hi;
+      carry = hi + c;
     }
     // Flush the final carry; it cannot overflow because r is wide enough.
     size_t k = i + b.size();

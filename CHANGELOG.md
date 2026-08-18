@@ -34,6 +34,24 @@ invoke it from the wrong thread. That was safe for exactly as long as only one
 gcd could be running, which was true until this release. The hook and its
 bookkeeping counters are `thread_local` now.
 
+**The schoolbook base case got its threshold corrected and its inner loop
+tightened.** The post-1.5 profile put ~37% of ALL samples inside one ~62-byte
+span -- `mulSchoolbook`'s inner multiply-accumulate, reached ~740M times as
+the base case of every other tier's recursion.
+
+`KARATSUBA_LIMBS` had been 40 since before Toom-3, Toom-4 and the
+thread-local allocator existed, and re-measuring found the real crossover is
+48: at 40 limbs schoolbook is still the faster of the two (1.579us against
+Karatsuba's 1.765us), and Karatsuba only takes the lead at 48 (2.500us
+against 2.302us).
+
+The inner loop itself was read-modify-writing the accumulator word twice per
+iteration -- once to add the product's low half, once to add the incoming
+carry -- two dependent round-trips to the same address. Folding the carry
+into the low half in registers first leaves one. Identical arithmetic, half
+the accumulator traffic: production gcd **143.0s -> 139.3s** (two runs
+agreeing within 0.25s), aggregate multiply CPU-time 325s -> 314s.
+
 ## 1.5
 
 **The gcd is about 2.4x faster.** Nothing about running the program changed --
