@@ -23,8 +23,8 @@ stranger's binary, building it yourself takes about a minute (see Quick start).
 Every version before it is on the
 [Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), newest first,
 each with its own notes on what changed. Those older releases are source only —
-their binaries are no longer distributed — but the source of every version is
-in this repository, one directory per release, kept exactly as it shipped, and
+their binaries are no longer distributed — but every one is still a tag in this
+repository, so its exact source is a checkout away (`git checkout v1.4`), and
 each builds the same way. [CHANGELOG.md](CHANGELOG.md) is the same history in
 one file.
 
@@ -77,7 +77,7 @@ unit of GPU memory as the existing `stage2_w` window, and porting it to P-1
 would need a modular inverse costing more than the stage 2 it accelerates.
 The one part that did transfer — building the table by a recurrence rather
 than an exponentiation per entry — is 1.7's speedup. There is a fuller
-write-up in [1.7/README.md](1.7/README.md).
+write-up in [MANUAL.md](MANUAL.md).
 
 Take this as one data point, not a definitive verdict — a different exponent,
 GPU, bounds, or either tool's own tuning could shift these numbers. The
@@ -92,7 +92,6 @@ Build from source — Visual Studio 2019/2022 with "Desktop development with
 C++", nothing else (or take the prebuilt binary from Download above):
 
 ```bash
-cd 1.7
 build.bat
 ```
 
@@ -104,7 +103,7 @@ Mp_p-1_gpu.exe
 Add an exponent to `worktodo.txt` (one per line) and edit `config.txt` to say
 how to work it; every setting is documented inline.
 
-The [1.7/README.md](1.7/README.md) is the manual: `config.txt` keys, the
+[MANUAL.md](MANUAL.md) is the manual: `config.txt` keys, the
 worktodo queue, the command line, reading the output, results format,
 resuming and raising bounds, and self-tests. Read it before running a real
 job.
