@@ -42,40 +42,30 @@ them is in [CHANGELOG.md](CHANGELOG.md).
 
 A full P-1 run — stage 1 to B1, then stage 2 to B2 — on the same GPU (NVIDIA
 RTX 3070), `M82589933` (8 digits, current GIMPS wavefront territory), and the
-same bounds (B1=100,000, B2=2,000,000) for every tool. All four rows were
-measured back to back in one sitting, under one FFT tuning, so they are
-comparable to each other:
+same bounds (B1=100,000, B2=2,000,000) for every tool. Every row was measured
+back to back in one sitting under one FFT tuning, from no checkpoint, so they
+are comparable to each other:
 
-| tool | version | stage 1 | stage 2 | **total** | relative |
-|---|---|--:|--:|--:|--:|
-| **Mp_p-1_gpu** | 1.6 | 1m47s | 2m29s + 3m11s gcd (overlapped) | **7m26s** | **1.00x** |
-| Mp_p-1_gpu | 1.5 | 1m43s | 2m24s + 2x 2m58s gcd | 10m09s | 1.37x slower |
-| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 3m25s | 5m04s | 9m36s | 1.29x slower |
-| [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | *(no P-1 support)* | n/a |
+| tool | version | stage 1 | stage 2 | final gcd | **total** | relative |
+|---|---|--:|--:|--:|--:|--:|
+| **Mp_p-1_gpu** | 1.7 | 1m34s | 2m11s | 3m05s | **6m51s** | **1.00x** |
+| Mp_p-1_gpu | 1.6 | 1m36s | 2m18s | 3m13s | 7m07s | 1.04x slower |
+| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 3m14s | 4m56s | *(included)* | 8m10s | 1.19x slower |
+| [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | *(no P-1 support)* | n/a |
 
-Both Mp_p-1_gpu runs reproduce figures already on record in this repo's own
-development notes (613s and 470s) to within a few percent, run fresh for
-this table rather than reused.
+**Reading the three columns.** The final gcd needs the stage-2 accumulator, so
+stage 1, stage 2 and the final gcd run in series and simply add up: 1m34 +
+2m11 + 3m05 = 6m50s against 6m51s observed for 1.7. There is a *second* gcd —
+stage 1's — which since 1.6 runs alongside stage 2; it took 3m13s here and
+finished well before the final gcd did, so it costs nothing and is not a
+column. That overlap is what 1.6 bought. It also means a second saved in
+stage 2 is a second saved overall, which is where 1.7's stage-2 work shows up.
 
-**1.7 is not in the table on purpose.** Its stage-2 change landed after these
-runs, and a later re-tune moved stage 1 on this machine by more than the
-change itself is worth — so a 1.7 row measured today would differ from the
-rows above for reasons that have nothing to do with 1.7. What *is* a clean
-comparison is 1.6 against 1.7 directly, same machine, same tuning, same
-bounds, back to back: stage 2 went from 2m20s to 2m14s here, and from 33s to
-24s on a 7-digit exponent where the `T_j` table is nine times larger. Nothing
-else about the run changed. Re-running the whole table under one fresh tuning
-is the honest way to fold 1.7 in, and has not been done yet.
-
-**And at these bounds that stage-2 saving does not reach the finish line.**
-Since 1.6 the stage-1 gcd runs alongside stage 2; in a full 1.7 run of
-`M82589933` at B2=2,000,000 it took 3m13s against stage 2's 2m11s, so stage 2
-finishes inside the gcd's shadow and is not on the critical path at all —
-1m34s stage 1, then 3m13s of gcd hiding stage 2, then 3m05s of the final gcd.
-Stage 2 only starts costing real time again once it outlasts that gcd, which
-it does at a 7-digit exponent (33s of stage 2 against ~10s of gcd) and at a
-wavefront exponent once B2 is large enough. This is the same conclusion as
-above from the other direction: the gcd is the thing worth attacking next.
+Mp_p-1_gpu is ahead on both GPU stages — about 2.1x on stage 1 and 2.3x on
+stage 2 — but gives most of it back in the `gcd CPU` phase, which PrMers runs
+through GMP and this runs through its own big-integer code. The final gcd is
+the single largest line in the table at 3m05s, longer than either GPU stage.
+**The gcd, not the pairing, is where the remaining headroom is.**
 
 **gpuowl has no P-1 factoring in this build.** Its `-B1`/`-B2` flags are
 documented but, checked directly against its `Worktodo.cpp`, its worktodo
@@ -85,15 +75,6 @@ alongside `-prp` silently runs a plain PRP test instead; confirmed by running
 it and watching it sail past the P-1 iteration count into millions of PRP
 iterations. gpuowl is a primality tool (PRP/LL) here, not a factoring tool —
 it isn't in this table because there's nothing P-1-shaped to time.
-
-Mp_p-1_gpu is ahead on both GPU stages — roughly 1.9x on stage 1 and 2.0x on
-stage 2 — but most of that lead is spent again on the `gcd CPU` phases, which
-PrMers runs through GMP and this runs through its own big-integer code. That
-is why 1.5, which waits for both gcds serially, still lands *behind* PrMers
-overall (10m09s vs 9m36s) despite winning every GPU phase, and why 1.6's one
-real change — overlapping the stage-1 gcd with stage 2 — is worth more than
-its size suggests. The gcd, not the pairing, is where the remaining headroom
-is.
 
 PrMers's stage 2 ("V-trace"/"Pair95") is a genuinely different construction —
 a Lucas trace `V_n = H^n + H^-n` instead of the `x^(j^2)` table shared by
@@ -105,9 +86,12 @@ The one part that did transfer — building the table by a recurrence rather
 than an exponentiation per entry — is 1.7's speedup. There is a fuller
 write-up in [1.7/README.md](1.7/README.md).
 
-Take this as one data point, not a definitive verdict — a different
-exponent, GPU, bounds, or either tool's own tuning could shift these
-numbers.
+Take this as one data point, not a definitive verdict — a different exponent,
+GPU, bounds, or either tool's own tuning could shift these numbers. The
+exponent matters more than it looks: at `M5378909`, a quarter of this size,
+the ranking **reverses** and PrMers is about 2.2x faster (25s against 54s,
+both at stock settings). This engine descends from gpuowl and is at its best
+on wavefront-sized transforms; at 262144 words it does not fill the GPU.
 
 ## Quick start
 
