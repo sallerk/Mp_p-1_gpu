@@ -32,15 +32,25 @@ Both runs matched 1.6's accumulator exactly (`acc res64` `446bd2d4ded89bd7` and
 change should have. The wavefront exponent gains least because GPU memory caps
 its table at 240 entries; the 7-digit one holds 2160.
 
-**How much of that reaches the end of a run depends on the bounds, and at
-M82589933 with B2 = 2,000,000 the answer is none.** Since 1.6 the stage-1 gcd
-runs alongside stage 2, and in a full run there it took 3m13s against stage
-2's 2m11s -- so stage 2 finishes inside the gcd's shadow and is not on the
-critical path at all. Making it 6s faster changes nothing end to end. The
-saving only becomes real once stage 2 is the longer of the two, which is the
-case at a 7-digit exponent (33s of stage 2 against ~10s of gcd) and at a
-wavefront exponent with a B2 large enough to push stage 2 past the gcd. Worth
-knowing before reading "27% off stage 2" as "27% off a run".
+**The saving does reach the end of a run.** Worth spelling out, because the
+overlap 1.6 introduced makes it easy to get backwards: the stage-1 gcd runs
+alongside stage 2, so it is tempting to compare the two and conclude the
+shorter one is free. That is the wrong comparison. The final gcd needs the
+stage-2 accumulator, so it cannot start until stage 2 ends, which puts
+stage 1, stage 2 and the final gcd in series. A full 1.7 run of M82589933 at
+B2 = 2,000,000:
+
+```
+stage 1   1m34s   |
+stage 2   2m11s   |  stage-1 gcd (3m13s) runs here, ending well
+final gcd 3m05s   |  before the final gcd does -- fully hidden
+                     1m34 + 2m11 + 3m05 = 6m50s, observed 6m51s
+```
+
+So stage 2 is on the critical path and a second saved there is a second saved
+overall. What the overlap buys is the *stage-1* gcd, which costs nothing. The
+only way stage 2 stops mattering is if the stage-1 gcd outlasts stage 2 plus
+the final gcd (193s against 316s here) -- not close, at these bounds.
 
 Verified by a new differential check in `--selftest=stage2`: build the table
 both ways and compare every entry on the GPU. Direct exponentiation is what

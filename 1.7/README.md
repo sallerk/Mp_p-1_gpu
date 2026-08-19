@@ -21,11 +21,10 @@ OpenCL SDK.
 > exponent with 2160 buffers, a few percent at a GIMPS-wavefront exponent
 > where GPU memory only allows a few hundred.
 >
-> How much of that reaches the end of a run is a separate question. Stage 2
-> runs alongside the stage-1 gcd, so it only costs wall time when it is the
-> longer of the two -- true at a 7-digit exponent, and at a wavefront exponent
-> only once B2 is large enough. At `M82589933` with B2=2,000,000 the gcd is
-> longer and this change is invisible end to end.
+> That reaches the end of a run: the final gcd needs the stage-2 accumulator,
+> so stage 1, stage 2 and the final gcd run in series, and a second saved in
+> stage 2 is a second saved overall. The stage-1 gcd runs alongside stage 2
+> and is what the overlap makes free -- not stage 2 itself.
 >
 > Carried over from 1.6, which fixed a real correctness bug in
 > checkpoint/resume: if you have ever resumed a stage-1 run under 1.5 or
