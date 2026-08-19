@@ -47,6 +47,29 @@ both ways and compare every entry on the GPU. Direct exponentiation is what
 shipped through 1.6, so this pins the new code against a version with real
 production mileage rather than against a reference written alongside it.
 
+**A tune.txt built for one exponent could pick a transform 4x too big for
+another, and did.** `--tune` is documented as a once-per-GPU step, so its
+output routinely gets used on exponents it was never measured at. Every
+tune.txt entry passes `maxExp` for any *smaller* exponent, and entries are
+offered ahead of the untuned fallback in the order their cost was measured --
+at the exponent they were tuned for, which says nothing about this one. Tune
+at ~2e7, then run M5378909, and the 1048576-word transform (5.13 bits/word) is
+offered before the 262144-word one that actually fits (20.52 bits/word). Both
+verify, so the first wins: **416 us/it against 90**, a four-times-too-large
+transform for 4.6x the time, silently, on the workflow the README recommends.
+
+`minBpw` already rejected a transform too *small* to be correct -- the same
+oversizing in its extreme form, where the engine refuses to run at all. This
+adds the missing upper bound: candidates more than 2x the smallest usable
+transform are demoted behind everything of a sane size. Within that 2x band
+the tuned order still rules, because that is the range where shape tuning
+genuinely decides. Demoted rather than dropped, so an oversized transform that
+works still beats failing outright.
+
+Verified both directions: M5378909 with a tune.txt from a larger exponent now
+picks 262144 words instead of 1048576, and M82589933 with its own tune.txt
+still picks the tuned 1:512:8:256:202 exactly as before.
+
 **Not done: a "V-trace"/Pair95 stage 2.**
 [PrMers](https://github.com/cherubrock-seb/PrMers) runs its P-1 stage 2 on the
 Lucas trace `V_n = H^n + H^-n`, where `V_(kD) - V_j` covers `kD-j` and `kD+j`

@@ -578,9 +578,40 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
         if (usable(f)) { addUnique(f); }
       }
     }
+    // 3. Demote transforms far larger than this exponent needs.
+    //
+    //    A tune.txt entry is ordered by the cost it measured AT THE EXPONENT IT
+    //    WAS TUNED FOR, which says nothing about this one, and every entry
+    //    passes maxExp for any smaller exponent. Tuning once at ~2e7 and then
+    //    running 5.4e6 -- the workflow the README actually recommends -- offers
+    //    a 1048576-word transform (5.13 bits/word) ahead of the 262144-word one
+    //    that fits (20.52 bits/word). Both verify, so the first wins: measured
+    //    416 us/it against 90, a 4x-too-big transform for 4.6x the time.
+    //
+    //    minBpw above rejects a transform too SMALL to be correct; this rejects
+    //    one too LARGE to be sensible. Cost grows at least linearly with size,
+    //    so no amount of shape tuning recovers a 2x size difference -- but a
+    //    shape within that band can genuinely win, which is what tuning is for,
+    //    so the band is where the tuned order still rules. Demoted rather than
+    //    dropped: if nothing of a sane size verifies, an oversized transform
+    //    that works still beats failing outright.
+    u32 minSize = 0;
+    for (const FFTConfig& f : candidates) {
+      if (!minSize || f.size() < minSize) { minSize = f.size(); }
+    }
+    const u32 sizeLimit = 2 * minSize;
+    const auto sane = [sizeLimit](const FFTConfig& f) { return f.size() <= sizeLimit; };
+    const size_t nOversized = std::count_if(candidates.begin(), candidates.end(),
+                                            [&](const FFTConfig& f) { return !sane(f); });
+    std::stable_partition(candidates.begin(), candidates.end(), sane);
+
     if (nTuned) {
       printf("  %u tuned candidate(s), then %u untuned as fallback\n",
              u32(nTuned), u32(candidates.size() - nTuned));
+    }
+    if (nOversized) {
+      printf("  %u candidate(s) over %u words demoted as oversized for M%u\n",
+             u32(nOversized), sizeLimit, E);
     }
   }
 
