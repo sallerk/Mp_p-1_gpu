@@ -11,32 +11,25 @@ OpenCL SDK.
 
 ## Download
 
-The current version has its own release, with a **prebuilt 64-bit Windows
-binary** inside — you do not need Visual Studio, a CUDA Toolkit or an OpenCL
-SDK to run it. The only requirement is `OpenCL.dll`, which ships with your GPU
-driver. Older versions' prebuilt binaries are no longer distributed; their
-source is still in this repository (see below) and builds the same way.
+**[Get the latest release](https://github.com/sallerk/Mp_p-1_gpu/releases/latest)**
+— a prebuilt 64-bit Windows binary. Nothing to install: no Visual Studio, no
+CUDA Toolkit, no OpenCL SDK. The only requirement is `OpenCL.dll`, which ships
+with your GPU driver. Unzip it anywhere and run it.
 
-| version | download | |
-|---|---|---|
-| **1.7** | [Mp_p-1_gpu-1.7-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.7/Mp_p-1_gpu-1.7-win64.zip) | current. Stage 2's `T_j` table is built by a recurrence instead of an exponentiation per entry — one multiply per unit of `j` rather than `2*log2(j)` per entry. Results are bit-for-bit unchanged; it is setup cost that stopped being paid, so the win scales with table size: 27% off stage 2 at a 7-digit exponent, a few percent at a wavefront one where GPU memory caps the table. Note that stage 2 is only on a run's critical path when it outlasts the stage-1 gcd it now runs alongside — see Speed below. Includes everything in 1.6. |
-| 1.6 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.6) | **Fixed a correctness bug**: resuming an interrupted stage 1 (Ctrl-C, a crash, a reboot) reprocessed one exponent bit, silently corrupting the residue — present in every version before it, 1.5 included. If you've ever resumed a stage-1 run under 1.5 or earlier, treat its result as unverified. Also: stage 1 checkpoints immediately on Ctrl-C now instead of only periodically, Ctrl-C is honored during the gcd phases (it previously was not), the stage-1 gcd runs alongside stage 2 instead of after it, and the schoolbook multiply base case is faster. |
-| 1.5 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.5) | **binary withdrawn — contains the checkpoint-resume bug fixed in 1.6**, see that row. Otherwise: the `gcd CPU` phase that ends each stage is about 2.4x faster (parallel Toom-Cook-3, a thread-local allocator after profiling showed the gcd was allocator-bound, and Toom-Cook-4). Nothing about running it changed. |
-| 1.4 | *(source only)* | exponents come from `worktodo.txt`, a queue processed in order, instead of a single `exponent =` in `config.txt`. Kept as-is; see [1.4/README.md](1.4/README.md). |
-| 1.3 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.3) | P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. |
-| 1.2 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.2) | P+1 gained stage 2 — catches a factor whose `q+1` is B1-smooth apart from one prime in `(B1,B2]`, the way P-1's stage 2 already did for `q-1`. Kept as-is. |
-| 1.1 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.1) | raising B2 on a finished P-1 stage 2 reuses the completed accumulator and walks only the new range, instead of starting over. Kept as-is. |
-| 1.0 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.0) | first release. GPU P-1 with both stages, P+1 stage 1, automatic bound selection, checkpoint/resume, PrimeNet-format JSON results. Kept as-is. |
+The executable is not code-signed, so the first launch will probably raise
+SmartScreen — *More info* → *Run anyway*. If you would rather not run a
+stranger's binary, building it yourself takes about a minute (see Quick start).
 
-The [releases page](https://github.com/sallerk/Mp_p-1_gpu/releases) has the
-full history; 1.0–1.2 there have their changelog notes but no attached binary.
-GitHub's green *Code → Download ZIP* button gives you the **whole
-repository**, every version at once.
+Every version before it is on the
+[Releases page](https://github.com/sallerk/Mp_p-1_gpu/releases), newest first,
+each with its own notes on what changed. Those older releases are source only —
+their binaries are no longer distributed — but the source of every version is
+in this repository, one directory per release, kept exactly as it shipped, and
+each builds the same way. [CHANGELOG.md](CHANGELOG.md) is the same history in
+one file.
 
-Each release is also its own directory in this repository, kept exactly as it
-shipped — clone it and run `build.bat` (Visual Studio 2019/2022, "Desktop
-development with C++") to get a binary for any version. What changed between
-them is in [CHANGELOG.md](CHANGELOG.md).
+GitHub's green *Code → Download ZIP* button gives you the **whole repository**,
+every version at once.
 
 ## Speed
 
@@ -96,7 +89,7 @@ on wavefront-sized transforms; at 262144 words it does not fill the GPU.
 ## Quick start
 
 Build from source — Visual Studio 2019/2022 with "Desktop development with
-C++", nothing else (or take the prebuilt 1.7 binary from Download above):
+C++", nothing else (or take the prebuilt binary from Download above):
 
 ```bash
 cd 1.7
