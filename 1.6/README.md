@@ -7,8 +7,8 @@ OpenCL SDK.
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [../ATTRIBUTION.md](../ATTRIBUTION.md).
 
-> This is the current release. What changed since 1.5 is in
-> [../CHANGELOG.md](../CHANGELOG.md).
+> This is the 1.6 release, kept exactly as it shipped. What changed since 1.5
+> is in [../CHANGELOG.md](../CHANGELOG.md).
 
 > **1.6 fixes a real correctness bug.** Resuming an interrupted stage 1 --
 > Ctrl-C, a crash, a reboot, anything that left a checkpoint and got restarted
