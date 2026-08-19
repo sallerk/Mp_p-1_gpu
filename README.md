@@ -19,7 +19,7 @@ source is still in this repository (see below) and builds the same way.
 
 | version | download | |
 |---|---|---|
-| **1.7** | [Mp_p-1_gpu-1.7-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.7/Mp_p-1_gpu-1.7-win64.zip) | current. Stage 2's `T_j` table is built by a recurrence instead of an exponentiation per entry — one multiply per unit of `j` rather than `2*log2(j)` per entry. Results are bit-for-bit unchanged; it is setup cost that stopped being paid, so the win scales with table size: 27% off stage 2 at a 7-digit exponent, a few percent at a wavefront one where GPU memory caps the table. Includes everything in 1.6. |
+| **1.7** | [Mp_p-1_gpu-1.7-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.7/Mp_p-1_gpu-1.7-win64.zip) | current. Stage 2's `T_j` table is built by a recurrence instead of an exponentiation per entry — one multiply per unit of `j` rather than `2*log2(j)` per entry. Results are bit-for-bit unchanged; it is setup cost that stopped being paid, so the win scales with table size: 27% off stage 2 at a 7-digit exponent, a few percent at a wavefront one where GPU memory caps the table. Note that stage 2 is only on a run's critical path when it outlasts the stage-1 gcd it now runs alongside — see Speed below. Includes everything in 1.6. |
 | 1.6 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.6) | **Fixed a correctness bug**: resuming an interrupted stage 1 (Ctrl-C, a crash, a reboot) reprocessed one exponent bit, silently corrupting the residue — present in every version before it, 1.5 included. If you've ever resumed a stage-1 run under 1.5 or earlier, treat its result as unverified. Also: stage 1 checkpoints immediately on Ctrl-C now instead of only periodically, Ctrl-C is honored during the gcd phases (it previously was not), the stage-1 gcd runs alongside stage 2 instead of after it, and the schoolbook multiply base case is faster. |
 | 1.5 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.5) | **binary withdrawn — contains the checkpoint-resume bug fixed in 1.6**, see that row. Otherwise: the `gcd CPU` phase that ends each stage is about 2.4x faster (parallel Toom-Cook-3, a thread-local allocator after profiling showed the gcd was allocator-bound, and Toom-Cook-4). Nothing about running it changed. |
 | 1.4 | *(source only)* | exponents come from `worktodo.txt`, a queue processed in order, instead of a single `exponent =` in `config.txt`. Kept as-is; see [1.4/README.md](1.4/README.md). |
@@ -66,6 +66,16 @@ bounds, back to back: stage 2 went from 2m20s to 2m14s here, and from 33s to
 24s on a 7-digit exponent where the `T_j` table is nine times larger. Nothing
 else about the run changed. Re-running the whole table under one fresh tuning
 is the honest way to fold 1.7 in, and has not been done yet.
+
+**And at these bounds that stage-2 saving does not reach the finish line.**
+Since 1.6 the stage-1 gcd runs alongside stage 2; in a full 1.7 run of
+`M82589933` at B2=2,000,000 it took 3m13s against stage 2's 2m11s, so stage 2
+finishes inside the gcd's shadow and is not on the critical path at all —
+1m34s stage 1, then 3m13s of gcd hiding stage 2, then 3m05s of the final gcd.
+Stage 2 only starts costing real time again once it outlasts that gcd, which
+it does at a 7-digit exponent (33s of stage 2 against ~10s of gcd) and at a
+wavefront exponent once B2 is large enough. This is the same conclusion as
+above from the other direction: the gcd is the thing worth attacking next.
 
 **gpuowl has no P-1 factoring in this build.** Its `-B1`/`-B2` flags are
 documented but, checked directly against its `Worktodo.cpp`, its worktodo

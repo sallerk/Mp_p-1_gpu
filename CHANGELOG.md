@@ -32,6 +32,16 @@ Both runs matched 1.6's accumulator exactly (`acc res64` `446bd2d4ded89bd7` and
 change should have. The wavefront exponent gains least because GPU memory caps
 its table at 240 entries; the 7-digit one holds 2160.
 
+**How much of that reaches the end of a run depends on the bounds, and at
+M82589933 with B2 = 2,000,000 the answer is none.** Since 1.6 the stage-1 gcd
+runs alongside stage 2, and in a full run there it took 3m13s against stage
+2's 2m11s -- so stage 2 finishes inside the gcd's shadow and is not on the
+critical path at all. Making it 6s faster changes nothing end to end. The
+saving only becomes real once stage 2 is the longer of the two, which is the
+case at a 7-digit exponent (33s of stage 2 against ~10s of gcd) and at a
+wavefront exponent with a B2 large enough to push stage 2 past the gcd. Worth
+knowing before reading "27% off stage 2" as "27% off a run".
+
 Verified by a new differential check in `--selftest=stage2`: build the table
 both ways and compare every entry on the GPU. Direct exponentiation is what
 shipped through 1.6, so this pins the new code against a version with real
