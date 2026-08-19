@@ -19,7 +19,8 @@ source is still in this repository (see below) and builds the same way.
 
 | version | download | |
 |---|---|---|
-| **1.6** | [Mp_p-1_gpu-1.6-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.6/Mp_p-1_gpu-1.6-win64.zip) | current. **Fixes a correctness bug**: resuming an interrupted stage 1 (Ctrl-C, a crash, a reboot) reprocessed one exponent bit, silently corrupting the residue — present in every version until now, 1.5 included. If you've ever resumed a stage-1 run from a checkpoint, treat its result as unverified. Also: stage 1 checkpoints immediately on Ctrl-C now instead of only periodically, Ctrl-C is honored during the gcd phases (it previously was not), the stage-1 gcd runs alongside stage 2 instead of after it, and the schoolbook multiply base case is faster. |
+| **1.7** | [Mp_p-1_gpu-1.7-win64.zip](https://github.com/sallerk/Mp_p-1_gpu/releases/download/v1.7/Mp_p-1_gpu-1.7-win64.zip) | current. Stage 2's `T_j` table is built by a recurrence instead of an exponentiation per entry — one multiply per unit of `j` rather than `2*log2(j)` per entry. Results are bit-for-bit unchanged; it is setup cost that stopped being paid, so the win scales with table size: 27% off stage 2 at a 7-digit exponent, a few percent at a wavefront one where GPU memory caps the table. Includes everything in 1.6. |
+| 1.6 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.6) | **Fixed a correctness bug**: resuming an interrupted stage 1 (Ctrl-C, a crash, a reboot) reprocessed one exponent bit, silently corrupting the residue — present in every version before it, 1.5 included. If you've ever resumed a stage-1 run under 1.5 or earlier, treat its result as unverified. Also: stage 1 checkpoints immediately on Ctrl-C now instead of only periodically, Ctrl-C is honored during the gcd phases (it previously was not), the stage-1 gcd runs alongside stage 2 instead of after it, and the schoolbook multiply base case is faster. |
 | 1.5 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.5) | **binary withdrawn — contains the checkpoint-resume bug fixed in 1.6**, see that row. Otherwise: the `gcd CPU` phase that ends each stage is about 2.4x faster (parallel Toom-Cook-3, a thread-local allocator after profiling showed the gcd was allocator-bound, and Toom-Cook-4). Nothing about running it changed. |
 | 1.4 | *(source only)* | exponents come from `worktodo.txt`, a queue processed in order, instead of a single `exponent =` in `config.txt`. Kept as-is; see [1.4/README.md](1.4/README.md). |
 | 1.3 | [release notes](https://github.com/sallerk/Mp_p-1_gpu/releases/tag/v1.3) | P+1 now picks its own B1 — it was silently borrowing P-1's, optimised for the wrong smoothness target, and the auto-chosen value is typically much smaller now. Plus display fixes. |
@@ -41,7 +42,9 @@ them is in [CHANGELOG.md](CHANGELOG.md).
 
 A full P-1 run — stage 1 to B1, then stage 2 to B2 — on the same GPU (NVIDIA
 RTX 3070), `M82589933` (8 digits, current GIMPS wavefront territory), and the
-same bounds (B1=100,000, B2=2,000,000) for every tool:
+same bounds (B1=100,000, B2=2,000,000) for every tool. All four rows were
+measured back to back in one sitting, under one FFT tuning, so they are
+comparable to each other:
 
 | tool | version | stage 1 | stage 2 | **total** | relative |
 |---|---|--:|--:|--:|--:|
@@ -54,6 +57,16 @@ Both Mp_p-1_gpu runs reproduce figures already on record in this repo's own
 development notes (613s and 470s) to within a few percent, run fresh for
 this table rather than reused.
 
+**1.7 is not in the table on purpose.** Its stage-2 change landed after these
+runs, and a later re-tune moved stage 1 on this machine by more than the
+change itself is worth — so a 1.7 row measured today would differ from the
+rows above for reasons that have nothing to do with 1.7. What *is* a clean
+comparison is 1.6 against 1.7 directly, same machine, same tuning, same
+bounds, back to back: stage 2 went from 2m20s to 2m14s here, and from 33s to
+24s on a 7-digit exponent where the `T_j` table is nine times larger. Nothing
+else about the run changed. Re-running the whole table under one fresh tuning
+is the honest way to fold 1.7 in, and has not been done yet.
+
 **gpuowl has no P-1 factoring in this build.** Its `-B1`/`-B2` flags are
 documented but, checked directly against its `Worktodo.cpp`, its worktodo
 parser only recognises `PRP=`, `Test=`/`DoubleCheck=` (Lucas-Lehmer), and
@@ -63,16 +76,24 @@ it and watching it sail past the P-1 iteration count into millions of PRP
 iterations. gpuowl is a primality tool (PRP/LL) here, not a factoring tool —
 it isn't in this table because there's nothing P-1-shaped to time.
 
-1.6 wins by 1.29x over PrMers overall; 1.5 alone, without 1.6's overlapped
-gcd, is slightly *behind* PrMers (10m09s vs 9m36s) — the overlap is worth
-more here than it looks at first glance. PrMers's stage 2
-("V-trace"/"Pair95") looks like a more advanced pairing scheme than the
-shared T-table BSGS approach both Mp_p-1_gpu and its gpuowl/PRPLL ancestor
-use — it's ahead on both raw stages, and Mp_p-1_gpu only takes the overall
-win because of the gcd/stage-2 overlap. 1.5 and 1.6 land within run-to-run
-noise of each other on stage 1 and stage 2 themselves, as expected — this
-session's 1.6 changes are CPU-side checkpoint/gcd fixes, not the GPU
-squaring or stage-2 path.
+Mp_p-1_gpu is ahead on both GPU stages — roughly 1.9x on stage 1 and 2.0x on
+stage 2 — but most of that lead is spent again on the `gcd CPU` phases, which
+PrMers runs through GMP and this runs through its own big-integer code. That
+is why 1.5, which waits for both gcds serially, still lands *behind* PrMers
+overall (10m09s vs 9m36s) despite winning every GPU phase, and why 1.6's one
+real change — overlapping the stage-1 gcd with stage 2 — is worth more than
+its size suggests. The gcd, not the pairing, is where the remaining headroom
+is.
+
+PrMers's stage 2 ("V-trace"/"Pair95") is a genuinely different construction —
+a Lucas trace `V_n = H^n + H^-n` instead of the `x^(j^2)` table shared by
+Mp_p-1_gpu and its gpuowl/PRPLL ancestor. It was scoped for 1.7 and not
+adopted: its pairing buys candidate partners at exactly the same price per
+unit of GPU memory as the existing `stage2_w` window, and porting it to P-1
+would need a modular inverse costing more than the stage 2 it accelerates.
+The one part that did transfer — building the table by a recurrence rather
+than an exponentiation per entry — is 1.7's speedup. There is a fuller
+write-up in [1.7/README.md](1.7/README.md).
 
 Take this as one data point, not a definitive verdict — a different
 exponent, GPU, bounds, or either tool's own tuning could shift these
@@ -81,10 +102,10 @@ numbers.
 ## Quick start
 
 Build from source — Visual Studio 2019/2022 with "Desktop development with
-C++", nothing else (or take the prebuilt 1.6 binary from Download above):
+C++", nothing else (or take the prebuilt 1.7 binary from Download above):
 
 ```bash
-cd 1.6
+cd 1.7
 build.bat
 ```
 
@@ -96,7 +117,7 @@ Mp_p-1_gpu.exe
 Add an exponent to `worktodo.txt` (one per line) and edit `config.txt` to say
 how to work it; every setting is documented inline.
 
-The [1.6/README.md](1.6/README.md) is the manual: `config.txt` keys, the
+The [1.7/README.md](1.7/README.md) is the manual: `config.txt` keys, the
 worktodo queue, the command line, reading the output, results format,
 resuming and raising bounds, and self-tests. Read it before running a real
 job.

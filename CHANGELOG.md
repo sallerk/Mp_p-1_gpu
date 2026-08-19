@@ -1,6 +1,70 @@
 # Changelog
 
-## 1.6 (in development)
+## 1.7 (in development)
+
+**Stage 2's `T_j` table is built by a recurrence instead of an exponentiation
+per entry.** The table holds `x^(j^2)` for every `j` in the plan -- the values
+each accumulator multiply is taken against. It was built with one
+`powSmall(x, j*j)` per entry, roughly `2*log2(j)` multiplies each. It is now a
+second-difference chain stepping `j` by 2:
+
+```
+x^((j+2)^2) = x^(j^2) * x^(4j+4)        x^(4(j+2)+4) = x^(4j+4) * x^8
+```
+
+which costs two multiplies per step of 2 in `j` -- one per unit of `j`, and
+independent of how many entries are kept. `D` is even, so every `j` coprime to
+`D` is odd and the chain lands on all of them.
+
+This changes no result: the accumulator comes out bit for bit identical and the
+multiply count is unchanged. It is setup cost that is no longer paid. The win
+therefore scales with table size, and table size is capped by GPU memory, so it
+is largest where the table is largest. Measured, same machine, same bounds,
+same shape, 1.6 against 1.7:
+
+| exponent | shape | `T_j` buffers | stage 2, 1.6 | stage 2, 1.7 | |
+|---|---|--:|--:|--:|--:|
+| M5378909 | D=2310 w=9 | 2160 | 33s | 24s | -27% |
+| M82589933 | D=420 w=5 | 240 | 2m20s | 2m14s | -4.3% |
+
+Both runs matched 1.6's accumulator exactly (`acc res64` `446bd2d4ded89bd7` and
+`5f12b67e85c663c3`) on an unchanged multiply count -- the shape a setup-only
+change should have. The wavefront exponent gains least because GPU memory caps
+its table at 240 entries; the 7-digit one holds 2160.
+
+Verified by a new differential check in `--selftest=stage2`: build the table
+both ways and compare every entry on the GPU. Direct exponentiation is what
+shipped through 1.6, so this pins the new code against a version with real
+production mileage rather than against a reference written alongside it.
+
+**Not done: a "V-trace"/Pair95 stage 2.**
+[PrMers](https://github.com/cherubrock-seb/PrMers) runs its P-1 stage 2 on the
+Lucas trace `V_n = H^n + H^-n`, where `V_(kD) - V_j` covers `kD-j` and `kD+j`
+in one scalar, with a "Pair95" extension adding irregular offsets `unit`,
+`unit+D`, `unit+3D`, `unit+7D`, ... This was scoped for 1.7 and rejected on the
+numbers:
+
+- **The pairing is the same trade at the same price.** Pair95's `L` levels give
+  each prime `L` candidate partners for `L*phi(D)/2` table entries; the
+  existing `stage2_w` window gives `w` candidates for `w*phi(D)/2` entries.
+  Same candidates per unit of memory. `--selftest=stage2plan` shows the rate is
+  a function of candidates per prime and barely of `D` at all (1.15-1.21 at
+  w=1, 1.47-1.54 at w=5, 1.56 at w=9), and that it flattens hard -- w=1 to w=3
+  buys 0.2 primes per multiply, w=7 to w=9 buys 0.03. There is no pairing
+  headroom here to go and get.
+- **The port would cost more than it saves.** V-trace for P-1 needs
+  `V_1 = x + x^-1 mod M_p`, an extended gcd on a p-bit number. The plain gcd
+  already runs for minutes at a wavefront exponent, so the inverse alone would
+  exceed the whole stage 2 it was meant to speed up. P+1's stage 2 here is
+  already a Lucas-trace walk, because a P+1 group element is only ever
+  available as a trace -- there the construction is free and natural.
+
+What did transfer is the part that is not about pairing at all: a linear index
+lets the baby table be built incrementally. `x^(j^2)` is quadratic in `j`, so it
+takes a second difference rather than a first -- and needs no inverse. That is
+the change above, and it is where 1.7's speedup comes from.
+
+## 1.6
 
 **Resuming an interrupted stage 1 reprocessed one exponent bit, corrupting the
 residue.** `powBase3`, `lucasV`, and `powResidue` all restarted a resumed walk

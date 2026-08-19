@@ -9,7 +9,7 @@ OpenCL SDK.
 
 > This is the 1.5 release, kept exactly as it shipped. What changed since is in
 > [../CHANGELOG.md](../CHANGELOG.md); the current version is
-> [../1.6](../1.6/README.md).
+> [../1.7](../1.7/README.md).
 
 > **This binary has a correctness bug, fixed in 1.6.** Resuming an
 > interrupted stage 1 (Ctrl-C, a crash, a reboot) reprocesses one exponent

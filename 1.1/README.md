@@ -8,7 +8,7 @@ Windows / MSVC, no external dependencies — no GMP, no CUDA or OpenCL SDK.
 
 > This is the 1.1 release, kept exactly as it shipped. What changed since is in
 > [../CHANGELOG.md](../CHANGELOG.md); the current version is
-> [../1.6](../1.6/README.md).
+> [../1.7](../1.7/README.md).
 
 ---
 
