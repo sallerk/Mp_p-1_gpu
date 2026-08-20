@@ -747,19 +747,32 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
   // order is weak evidence: it comes from tune.txt, whose costs were measured
   // at whatever exponent the tune targeted, on shapes this function then
   // filters only by size. Within the sane size band that ranking is a guess,
-  // and shapes inside it have measured tens of percent apart. An 8-digit
-  // exponent commits hours to whatever is picked, so a bounded budget spent
-  // timing the alternatives is cheap insurance. Below 8 digits the whole job
-  // can finish in under a minute, and 15 seconds of shopping would be a large
-  // fraction of it -- hence the floor, rather than doing this unconditionally.
+  // and shapes inside it have measured tens of percent apart.
+  //
+  // This ran only for 8-digit exponents at first, on the reasoning that a
+  // shorter job cannot afford 15 seconds of shopping. That was the wrong
+  // shape of rule, and the ordering above is what exposed it: ranking by
+  // precision headroom assumes the cheapest arithmetic is the one with the
+  // lowest bits-per-word ceiling, and FP64 breaks that assumption -- lowest
+  // ceiling of all at ~19 bpw, yet 4.3x off the pace here, because consumer
+  // nVidia runs FP64 at 1/64 rate. FP64 only becomes usable below ~19 bpw,
+  // which at the smallest transform means an exponent under about 5.1e6, and
+  // that was exactly the region with no search to catch it. Measured at
+  // M786433: the unmeasured pick was FP64 at 234 us/it where M61 does 148.8,
+  // 57% given away.
+  //
+  // So there is no exponent floor. What scales is the COST of looking, not the
+  // value of it: a candidate at 262144 words builds and times in about two
+  // seconds against ten at 2097152, so the same two-or-three-way comparison
+  // costs roughly 6s on a small exponent and 20s on a wavefront one. The
+  // budget below bounds the large end; the candidate cap bounds the small end.
   //
   // The budget covers only candidates that must actually be measured. A cost
   // already in fft-verified.txt (same exponent, same GPU and driver) is reused
   // for free, so a repeat run of the same exponent re-picks the same winner
   // instantly. Delete fft-verified.txt to force a fresh search.
-  const u32 SEARCH_MIN_EXPONENT = 10000000;   // 8 digits
   const double SEARCH_BUDGET = 15.0;          // seconds, measured candidates only
-  const bool search = forcedSpec.empty() && E >= SEARCH_MIN_EXPONENT;
+  const bool search = forcedSpec.empty();
 
   if (search) {
     // Deliberately no time promised here. The budget bounds when the search
@@ -784,6 +797,12 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
   // of the 6-12s a candidate costs -- so candidates, not iterations, are what
   // the budget actually buys.
   const u32 SEARCH_MIN_TIMED = 2;
+
+  // ...and the cap that stops a cheap exponent from timing everything offered.
+  // At 262144 words the budget would not bind until eight candidates had run,
+  // which is the 15-second tax a short job should not pay. Three is enough:
+  // the winner was in the first two timings at every exponent measured.
+  const u32 SEARCH_MAX_TIMED = 3;
 
   size_t best = tries;      // index into candidates; `tries` means "none yet"
   double bestCost = 0;
@@ -816,9 +835,10 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
     // before enough candidates have actually been timed to constitute a
     // comparison (and so never before one has worked at all, which would
     // otherwise leave the job with no FFT).
-    if (search && nTimed >= SEARCH_MIN_TIMED && spent >= SEARCH_BUDGET) {
-      printf("  %u candidate(s) left untimed: %.0fs budget spent\n",
-             u32(tries - i), spent);
+    if (search && nTimed >= SEARCH_MIN_TIMED
+        && (spent >= SEARCH_BUDGET || nTimed >= SEARCH_MAX_TIMED)) {
+      printf("  %u candidate(s) left untimed: %u compared in %.0fs\n",
+             u32(tries - i), nTimed, spent);
       break;
     }
 

@@ -80,20 +80,25 @@ Verified both directions: M5378909 with a tune.txt from a larger exponent now
 picks 262144 words instead of 1048576, and M82589933 with its own tune.txt
 still picks the tuned 1:512:8:256:202 exactly as before.
 
-**An 8-digit exponent now spends 15-25 seconds picking its transform, instead
-of taking the first one that works.** Candidate order came from
+**A run now times its transform candidates instead of taking the first one
+that works.** Candidate order came from
 tune.txt, whose costs were measured at whatever exponent the tune targeted; the
 oversizing fix above bounds how wrong that order can be, but inside the
 remaining 2x band it is still a guess -- and the table below shows a 4.9x
 spread inside that band. Selection took the first candidate that passed its
 correctness check and stopped looking.
 
-It now times candidates and keeps the fastest. The budget gates *starting* a
-measurement, not finishing one, and a candidate cannot be cut short, so a run
-overshoots rather than stopping dead -- see the ordering entry below for what
-that settles at and why rejected transforms can push it further. Against hours
-of stage 1 it is noise either way. It is skipped below 8 digits: a 7-digit job
-can finish inside a minute, where that much shopping would be a visible tax.
+It now times two or three candidates and keeps the fastest. The budget gates
+*starting* a measurement, not finishing one, and a candidate cannot be cut
+short, so a run overshoots rather than stopping dead -- see the ordering entry
+below for what that settles at and why rejected transforms can push it further.
+
+There is no exponent floor on this. There was at first -- 8 digits, on the
+reasoning that a shorter job cannot afford the wait -- but what scales with the
+exponent is the cost of looking, not the value of it. A candidate at 262144
+words builds and times in about two seconds against ten at 2097152, so the same
+comparison costs 7s at M786433 and 23s at M99700031. The floor also turned out
+to be actively harmful; see the ordering entry.
 
 How wide the field actually is, measured on M13466917 with no tune.txt at all,
 every candidate 524288 or 1048576 words and so all inside the size band the
@@ -175,14 +180,32 @@ every safe shape at each exponent:
 | within 2% | 8 of 13 | **13 of 13** |
 | worst case | +81% | **+2.0%** |
 
+The rule pays most where the families are closest to each other in precision
+and furthest apart in speed. At M5378909 the old catalog order took
+`2:256:2:256` at 148.7 us/it where M61's `3:256:2:256` does 52.2 -- the
+ordering makes that exponent **2.85x faster**.
+
+It also has a failure mode, found by running the rule against the full range
+rather than the wavefront: it assumes the cheapest arithmetic is the one with
+the lowest bits-per-word ceiling, and FP64 is the exception -- lowest ceiling
+of all at ~19 bpw, and 4.3x off the pace here, because consumer nVidia runs
+FP64 at 1/64 rate. FP64 only becomes usable below ~19 bpw, which at the
+smallest transform means an exponent under about 5.1e6 -- precisely the region
+the 8-digit floor left unmeasured. At M786433 that ordered FP64 first and took
+it unmeasured: 234 us/it where M61 does 148.8, 57% given away. Removing the
+floor fixes it outright, because two candidates get compared and FP64 loses on
+the numbers rather than on an assumption. On a card with fast FP64 it would win
+there, which is the point of measuring instead of asserting.
+
 The residue is a limit worth knowing: run-to-run GPU clock variation is around
 10%, so a 3000-iteration measurement cannot reliably separate shapes closer
 than about 5%. At M65000011 the top two are 2% apart and it takes either. What
 the search now reliably avoids is the large mistake, which is what mattered.
 
-Selection costs 15-24s at every exponent tested but M51900019, where four
-rejected transforms push it to 50s -- the case where spending the time is most
-clearly right.
+Selection costs 7-23s across the range from M786433 to M120000007, scaling
+with transform size. The exception is M51900019, where four transforms fail
+their correctness check before a working one appears and push it to 50s -- the
+case where spending the time is most clearly right.
 
 **`fft-verified.txt` gained a field.** Each line now ends with the measurement
 scale (`q5`). Costs taken over different iteration counts are not comparable,

@@ -212,23 +212,25 @@ With `fft = auto` (the default), a run ranks candidates from `tune.txt`, drops
 any that cannot hold the exponent or that are more than twice the smallest
 usable size, and verifies them in order against a correctness check.
 
-For an exponent of **8 digits or more** it does not stop at the first one that
-passes: it times candidates and takes the fastest, typically spending 15–25
-seconds. Shapes that all pass the correctness check have measured 4.9x apart at
-one exponent, so against hours of stage 1 the search is noise. It never stops
-before two candidates have actually been compared, so neither a slow first
-candidate nor a run of rejected ones can leave a job on an unexamined
-transform.
+It does not stop at the first one that passes: it times two or three candidates
+and takes the fastest. Shapes that all pass the correctness check have measured
+4.9x apart at one exponent. It never stops before two have actually been
+compared, so neither a slow first candidate nor a run of rejected ones can
+leave a job on an unexamined transform.
+
+The wait scales with the transform, since that is what costs: about 7 seconds
+at the smallest exponent the engine accepts, 15–25 at a wavefront one, and more
+when candidates fail their correctness check and have to be skipped.
 
 Untuned candidates are ordered by **precision headroom**: smallest transform
 first, and within one size, the cheapest arithmetic whose bits-per-word ceiling
-still clears the exponent. Every family here buys precision with speed, so the
+still clears the exponent. That is an ordering, not a decision — FP64 is the
+one family it ranks wrongly on this hardware (lowest ceiling, but 4.3x slower
+than the NTTs here), and it loses on the measurement instead. Every family here buys precision with speed, so the
 tightest fit is the one to try first, and one variant of every shape is tried
 before any shape gets a second (the `:101` and `:202` of a shape measure within
 0.2% of each other). Entries from `tune.txt` keep their measured order and are
 tried ahead of all of it.
-
-Below 8 digits the search is skipped: a job that short cannot afford it.
 
 A caveat on precision: GPU clocks vary about 10% run to run, so the search
 cannot reliably separate two shapes closer than roughly 5%. It is built to

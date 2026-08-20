@@ -92,15 +92,14 @@ bias = 2.0
 #  runs. That verification is not paranoia: a tune on this GPU once produced a
 #  tune.txt in which every entry computed WRONG results.
 #
-#  For an exponent of 8 digits or more, auto does not stop at the first
-#  candidate that verifies: it times candidates and takes the fastest, usually
-#  spending 15-25 seconds. Against hours of stage 1 that is noise, and shapes
-#  that all verify have measured 4.9x apart at one exponent. Untuned candidates
-#  are tried smallest-transform-first, and within a size, cheapest arithmetic
-#  that still has the precision for this exponent. Timings land in
-#  fft-verified.txt, so a repeat run of the same exponent re-picks the same
-#  winner for free -- delete that file to search again. Below 8 digits the
-#  search is skipped, because a job that short cannot afford it.
+#  auto does not stop at the first candidate that verifies: it times two or
+#  three and takes the fastest. Shapes that all verify have measured 4.9x apart
+#  at one exponent. Untuned candidates are tried smallest-transform-first, and
+#  within a size, cheapest arithmetic that still has the precision for this
+#  exponent. The wait scales with the transform -- about 7s at the smallest
+#  exponent, 15-25s at a wavefront one. Timings land in fft-verified.txt, so a
+#  repeat run of the same exponent re-picks the same winner for free -- delete
+#  that file to search again.
 #
 #  Recommended workflow for a new exponent:
 #     1. put the exponent in worktodo.txt
