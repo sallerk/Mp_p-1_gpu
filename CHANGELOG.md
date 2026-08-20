@@ -353,6 +353,34 @@ longer duration before being trusted; the change only moves the line between
 recommended and suggested to where the measurement can support it. On
 M82589933 that moved five of twelve settings across.
 
+**Three things `--tune` got wrong once it started choosing its own transform,
+all reported from a real run.**
+
+*It advised you to run a tune, while running one.* Calling the production FFT
+selector brought its "no tune.txt entry covers M... / Consider: --tune ..."
+notice along with it, which is sound advice to a job and nonsense to a tune.
+The selector now takes a flag saying who is calling.
+
+*It compared three candidates and gave up.* The selector stops early on purpose
+-- a job is waiting on it, so it buys a good-enough answer in about twenty
+seconds. A tune has been asked for exactly this measurement and has minutes to
+spend, so reporting "3 compared, 9 left untimed" is not a tune, it is a slower
+guess. For a tune the budget and the comparison cap are both lifted and the
+candidate ceiling goes from 8 to 24, so every sane-sized shape gets timed.
+
+*Ctrl-C did not stop it.* `Gpu`'s stop checks go through
+`Signal::stopRequested()`, which reports a SIGINT handler this program never
+installs -- `Signal`'s constructor is what installs one, and nothing anywhere
+constructs a `Signal`. So every one of those checks has always been dead. It
+went unnoticed while `timePRP` was only reached for a few seconds of
+verification; `--tune` spends its entire run inside it. What does work is
+`gInterrupted`, set by the console control handler `main` installs, and which
+the P-1 job path has used all along. `timePRP` now honours it, `verifyOne`
+rethrows rather than swallowing a stop as "that candidate is broken" (which
+would have cost one Ctrl-C per candidate), and `main` reports an interrupted
+tune as interrupted rather than as a failure, keeping whatever was already
+written.
+
 **Not done: a "V-trace"/Pair95 stage 2.**
 [PrMers](https://github.com/cherubrock-seb/PrMers) runs its P-1 stage 2 on the
 Lucas trace `V_n = H^n + H^-n`, where `V_(kD) - V_j` covers `kD-j` and `kD+j`

@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <string>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <map>
 #include <random>
@@ -388,6 +389,11 @@ int runExtendTests(GpuCommon shared, Queue* q, const string& fftSpec) {
 // hundred iterations with the same check tune uses, and returns a sentinel cost
 // on failure. A couple of seconds against a multi-hour stage 1.
 // ---------------------------------------------------------------------------
+// Set by main.cpp's console control handler; see Gpu::timePRP. Declared out
+// here on purpose: inside the anonymous namespace it would pick up internal
+// linkage and refer to nothing.
+extern std::atomic<bool> gInterrupted;
+
 namespace {
 
 // timePRP marks a failed correctness check by returning 0.1 s/iteration.
@@ -404,6 +410,10 @@ bool verifyOne(GpuCommon shared, Queue* q, u32 E, const FFTConfig& fft, double* 
     if (cost) { *cost = c; }
     return c < TIME_PRP_FAILED;
   } catch (const char* s) {
+    // A stop request is not this config failing -- swallowing it would turn one
+    // Ctrl-C into "that candidate is broken, on to the next", and the user
+    // would have to press it once per candidate to get out.
+    if (gInterrupted.load()) { throw; }
     printf("      %s: threw \"%s\"\n", fft.spec().c_str(), s);
     return false;
   } catch (const std::exception& e) {
@@ -575,8 +585,12 @@ void appendVerifyCache(u32 E, const string& tag, const string& spec, bool ok,
 
 } // namespace
 
+// `forTune` means the caller is --tune, which changes two things: it must not
+// be advised to run a tune, and it must not settle for a partial comparison.
+// A run trades thoroughness for startup latency because a job is waiting; a
+// tune has been asked for exactly this measurement and has minutes to spend.
 FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
-                            const string& forcedSpec, bool verify) {
+                            const string& forcedSpec, bool verify, bool forTune) {
   // Candidate order: an explicit -fft wins; otherwise tune.txt by measured
   // cost, then bestFit's own fallback as a last resort.
   vector<FFTConfig> candidates;
@@ -616,7 +630,7 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
     // this threshold it still saves the search some work, so both lines
     // survive there.
     const u32 TUNE_ADVICE_MIN_EXPONENT = 10000000;   // 8 digits
-    if (!nTuned && E >= TUNE_ADVICE_MIN_EXPONENT) {
+    if (!nTuned && E >= TUNE_ADVICE_MIN_EXPONENT && !forTune) {
       log("  no tune.txt entry covers M%u.\n"
           "  Consider:  Mp_p-1_gpu.exe --tune quick=10,minexp=%u,maxexp=%u\n",
           E, E, E);
@@ -748,7 +762,10 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
   if (!verify) { return candidates.front(); }
 
   // Verifying costs a few seconds each; do not crawl through hundreds of them.
-  const size_t MAX_TRIES = 8;
+  // A tune gets a much higher ceiling: its whole purpose is to measure, and
+  // reporting "3 compared, 9 left untimed" is not a tune, it is a guess with a
+  // longer runtime.
+  const size_t MAX_TRIES = forTune ? 24 : 8;
   const size_t tries = std::min(candidates.size(), MAX_TRIES);
 
   const string tag = deviceTag(q);
@@ -792,7 +809,8 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
     // stops STARTING work, not when it finishes, and a candidate rejected for
     // computing wrong results costs as much as one that is timed -- M51900019
     // rejects five in a row. The line at the end reports what it really took.
-    printf("  timing candidates to pick the fastest for M%u\n", E);
+    printf(forTune ? "  timing every candidate for M%u\n"
+                   : "  timing candidates to pick the fastest for M%u\n", E);
   }
 
   // A candidate that FAILS its correctness check still burns wall time, and
@@ -848,7 +866,7 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
     // before enough candidates have actually been timed to constitute a
     // comparison (and so never before one has worked at all, which would
     // otherwise leave the job with no FFT).
-    if (search && nTimed >= SEARCH_MIN_TIMED
+    if (search && !forTune && nTimed >= SEARCH_MIN_TIMED
         && (spent >= SEARCH_BUDGET || nTimed >= SEARCH_MAX_TIMED)) {
       printf("  %u candidate(s) left untimed: %u compared in %.0fs\n",
              u32(tries - i), nTimed, spent);

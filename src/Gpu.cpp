@@ -19,6 +19,7 @@
 #include "Stage2Plan.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <bitset>
 #include <limits>
@@ -2360,6 +2361,17 @@ tuple<bool, u64, RoeInfo, RoeInfo> Gpu::measureROE(bool quick) {
   return {ok, res, roes.first, roes.second};
 }
 
+// Set by main.cpp's console control handler. Gpu's own stop checks go through
+// Signal::stopRequested(), which reports a SIGINT handler that this program
+// never installs -- Signal's constructor is what installs it and nothing ever
+// constructs one -- so every one of those checks is dead. That was survivable
+// while timePRP was only reached from a few seconds of verification; --tune
+// spends its entire run inside it, and Ctrl-C did nothing at all.
+extern std::atomic<bool> gInterrupted;
+
+// True when the user has asked to stop, by either mechanism.
+static bool stopWanted() { return Signal::stopRequested() || gInterrupted.load(); }
+
 double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest) to 10 (quickest, shortest)
   u32 blockSize{}, iters{}, warmup{};
 
@@ -2397,7 +2409,7 @@ double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest
     ++k;
   }
   queue->finish();
-  if (Signal::stopRequested()) { throw "stop requested"; }
+  if (stopWanted()) { throw "stop requested"; }
 
   Timer t;
   queue->setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
@@ -2415,12 +2427,12 @@ double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest
 
     modMul(bufCheck, bufData, leadIn);
     leadIn = LEAD_MIDDLE;
-    if (Signal::stopRequested()) { throw "stop requested"; }
+    if (stopWanted()) { throw "stop requested"; }
   }
   queue->finish();
   double secsPerIt = t.reset() / (iters - warmup);
 
-  if (Signal::stopRequested()) { throw "stop requested"; }
+  if (stopWanted()) { throw "stop requested"; }
 
   u64 res = dataResidue();
   bool ok = doCheck(blockSize);

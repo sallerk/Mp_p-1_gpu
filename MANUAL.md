@@ -221,6 +221,16 @@ block instead, which is what that block is for. Expect a loaded or hot GPU to
 admit fewer settings than an idle one — that is the threshold doing its job,
 not the tune failing.
 
+A tune times **every** candidate transform, not the two or three a job start
+settles for — it has been asked for the measurement, so it takes the time.
+Expect the FFT selection at the head of a tune to run for minutes rather than
+the ~20 seconds a job start spends.
+
+`Ctrl-C` stops a tune. Whatever was already written to `tune.txt` and
+`Mp_p-1_gpu-tune-config.txt` is kept; the option search appends its results
+before the shape sweep begins, so a tune stopped late still leaves something
+usable.
+
 **What to expect from it.** On the machine this was developed on, the kernel
 options do not produce a win these measurements can resolve: tuned and stock
 come out level at both a small exponent and a wavefront one. What `--tune`

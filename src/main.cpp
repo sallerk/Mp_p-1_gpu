@@ -67,7 +67,8 @@ int runStage2Tests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 int runB2ExtendTests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 int runPp1Stage2Tests(GpuCommon shared, Queue* q, const std::string& fftSpec);
 FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
-                            const std::string& forcedSpec, bool verify);
+                            const std::string& forcedSpec, bool verify,
+                            bool forTune);
 void recommendFFT(GpuCommon shared, Queue* q, u32 E);
 
 std::atomic<bool> gInterrupted{false};
@@ -485,7 +486,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // at once.
   const std::string jobSpec = !fftSpec.empty() ? fftSpec : cfg.fftSpec;
   FFTConfig fft = chooseVerifiedFFT(shared, &queue, cfg.exponent,
-                                    jobSpec, cfg.verifyFft);
+                                    jobSpec, cfg.verifyFft, false);
   printf("  FFT %s (%llu words, %.2f bits/word)\n", fft.spec().c_str(),
          (unsigned long long) fft.size(), double(cfg.exponent) / fft.size());
 
@@ -1028,7 +1029,17 @@ static int runMain(int argc, char** argv) {
 
     if (doTune) {
       Tune tune{&queue, shared};
-      tune.tune();
+      try {
+        tune.tune();
+      } catch (const char* s) {
+        // Ctrl-C during a tune arrives here. Report it as the interruption it
+        // is rather than as a failure, and keep whatever was written: the
+        // option search appends its results before the shape sweep starts, so
+        // a tune stopped late still leaves something usable behind.
+        log("\n  --tune stopped: %s\n"
+            "  Anything already written to tune.txt and Mp_p-1_gpu-tune-config.txt is kept.\n", s);
+        return 1;
+      }
       // Never recommend tune's winner unverified -- see recommendFFT().
       if (haveConfig && cfg.exponent) { recommendFFT(shared, &queue, cfg.exponent); }
       else { printf("\n  (no exponent in worktodo.txt, so tune.txt was not verified)\n"); }

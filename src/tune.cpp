@@ -24,7 +24,8 @@ using namespace std;
 // kernel options below are measured on the transform the job will actually
 // use, rather than on a shape hard-coded here.
 FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
-                            const std::string& forcedSpec, bool verify);
+                            const std::string& forcedSpec, bool verify,
+                            bool forTune);
 
 // split() was defined here upstream even though it is declared in common.h.
 // This program compiles common.cpp unconditionally but tune.cpp only for -tune,
@@ -491,7 +492,7 @@ void Tune::tune() {
 
     log("\nChoosing the transform M%u would use, before tuning anything against it.\n",
         tuneExponent);
-    const FFTConfig tunedFFT = chooseVerifiedFFT(shared, q, tuneExponent, args->fftSpec, true);
+    const FFTConfig tunedFFT = chooseVerifiedFFT(shared, q, tuneExponent, args->fftSpec, true, true);
     log("Tuning kernel options on %s -- the transform M%u selects.\n",
         tunedFFT.spec().c_str(), tuneExponent);
 
