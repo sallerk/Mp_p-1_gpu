@@ -564,6 +564,46 @@ void Tune::tune() {
       }
     }
 
+    // The margin a "win" has to clear, measured rather than assumed.
+    //
+    // configsUpdate's thresholds were constants -- 0.003 at most call sites and
+    // 0.000 at six of them -- so an option that came out 1% ahead was written
+    // as an active -use line. Run-to-run variation on the same shape is around
+    // 2%, which made those lines as often a coin toss as a finding.
+    //
+    // Nothing is lost by demanding more: a sub-threshold win still gets
+    // recorded, in the commented "slightly faster" block that already says in
+    // as many words that it wants timing over a longer duration before being
+    // trusted. This only moves the line between "recommended" and "suggested"
+    // to where the measurement can actually support it.
+    //
+    // Every block below times the SAME shape at the SAME exponent for the same
+    // number of iterations, so one estimate covers all of them. It is taken the
+    // way the option search itself measures -- repeat runs inside this one
+    // process -- because that is the noise those measurements are subject to.
+    double noiseFloor = 0.003;
+    {
+      double lo = 1e30, hi = 0;
+      for (int i = 0; i < 4; ++i) {
+        const double c = Gpu::make(q, optExponent, shared, tunedFFT, {}, false)->timePRP(quick);
+        if (c < 99999.0) { lo = std::min(lo, c); hi = std::max(hi, c); }
+      }
+      if (hi > 0 && lo < 1e30 && lo > 0) {
+        const double spread = (hi - lo) / lo;
+        noiseFloor = std::max(0.003, spread);
+        log("Repeat timings of %s span %.1f%% (%.1f to %.1f us/it). An option has to "
+            "beat the current setting by more than that to be recommended rather "
+            "than merely suggested.\n",
+            tunedFFT.spec().c_str(), 100.0 * spread, lo, hi);
+        if (spread > 0.10) {
+          log("  WARNING: that is a wide spread, so few options will clear it. That is the "
+              "honest outcome rather than a failure -- these timings cannot resolve a "
+              "smaller difference, and writing one down anyway is how a tune ends up "
+              "recommending noise.\n");
+        }
+      }
+    }
+
     const bool optFP64 = tunedFFT.FFT_FP64;
     const bool optFP32 = tunedFFT.FFT_FP32;
     const bool optGF31 = tunedFFT.NTT_GF31;
@@ -632,8 +672,8 @@ void Tune::tune() {
       }
       log("Best IN_WG, IN_SIZEX is %u, %u.  Default is 128, 16.\n", best_in_wg, best_in_sizex);
       if (best_cost >= 99999.0) { log("  WARNING: every IN_WG/IN_SIZEX combination computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "IN_WG", best_in_wg, newConfigKeyVals, suggestedConfigKeyVals);
-      configsUpdate(current_cost, best_cost, 0.003, "IN_SIZEX", best_in_sizex, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "IN_WG", best_in_wg, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "IN_SIZEX", best_in_sizex, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["IN_WG"] = to_string(best_in_wg);
       args->flags["IN_SIZEX"] = to_string(best_in_sizex);
 
@@ -656,8 +696,8 @@ void Tune::tune() {
       }
       log("Best OUT_WG, OUT_SIZEX is %u, %u.  Default is 128, 16.\n", best_out_wg, best_out_sizex);
       if (best_cost >= 99999.0) { log("  WARNING: every OUT_WG/OUT_SIZEX combination computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "OUT_WG", best_out_wg, newConfigKeyVals, suggestedConfigKeyVals);
-      configsUpdate(current_cost, best_cost, 0.003, "OUT_SIZEX", best_out_sizex, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "OUT_WG", best_out_wg, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "OUT_SIZEX", best_out_sizex, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["OUT_WG"] = to_string(best_out_wg);
       args->flags["OUT_SIZEX"] = to_string(best_out_sizex);
     }
@@ -680,7 +720,7 @@ void Tune::tune() {
       }
       log("Best PAD is %u bytes.  Default PAD is %u bytes.\n", best_pad, AMDGPU ? 256 : 0);
       if (best_cost >= 99999.0) { log("  WARNING: every PAD value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.000, "PAD", best_pad, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.000, noiseFloor), "PAD", best_pad, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["PAD"] = to_string(best_pad);
     }
 
@@ -702,7 +742,7 @@ void Tune::tune() {
       }
       log("Best MIDDLE_IN_LDS_TRANSPOSE is %u.  Default MIDDLE_IN_LDS_TRANSPOSE is 1.\n", best_middle_in_lds_transpose);
       if (best_cost >= 99999.0) { log("  WARNING: every MIDDLE_IN_LDS_TRANSPOSE value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.000, "MIDDLE_IN_LDS_TRANSPOSE", best_middle_in_lds_transpose, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.000, noiseFloor), "MIDDLE_IN_LDS_TRANSPOSE", best_middle_in_lds_transpose, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["MIDDLE_IN_LDS_TRANSPOSE"] = to_string(best_middle_in_lds_transpose);
     }
 
@@ -724,7 +764,7 @@ void Tune::tune() {
       }
       log("Best MIDDLE_OUT_LDS_TRANSPOSE is %u.  Default MIDDLE_OUT_LDS_TRANSPOSE is 1.\n", best_middle_out_lds_transpose);
       if (best_cost >= 99999.0) { log("  WARNING: every MIDDLE_OUT_LDS_TRANSPOSE value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.000, "MIDDLE_OUT_LDS_TRANSPOSE", best_middle_out_lds_transpose, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.000, noiseFloor), "MIDDLE_OUT_LDS_TRANSPOSE", best_middle_out_lds_transpose, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["MIDDLE_OUT_LDS_TRANSPOSE"] = to_string(best_middle_out_lds_transpose);
     }
 
@@ -745,7 +785,7 @@ void Tune::tune() {
       }
       log("Best INPLACE is %u.  Default INPLACE is 0.  Best INPLACE setting may be different for other FFT lengths.\n", best_inplace);
       if (best_cost >= 99999.0) { log("  WARNING: every INPLACE value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.002, "INPLACE", best_inplace, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.002, noiseFloor), "INPLACE", best_inplace, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["INPLACE"] = to_string(best_inplace);
     }
 
@@ -767,7 +807,7 @@ void Tune::tune() {
       }
       log("Best NONTEMPORAL is %u.  Default NONTEMPORAL is 0.\n", best_nontemporal);
       if (best_cost >= 99999.0) { log("  WARNING: every NONTEMPORAL value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.000, "NONTEMPORAL", best_nontemporal, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.000, noiseFloor), "NONTEMPORAL", best_nontemporal, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["NONTEMPORAL"] = to_string(best_nontemporal);
     }
 
@@ -789,7 +829,7 @@ void Tune::tune() {
       }
       log("Best FAST_BARRIER is %u.  Default FAST_BARRIER is 0.\n", best_fast_barrier);
       if (best_cost >= 99999.0) { log("  WARNING: every FAST_BARRIER value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.000, "FAST_BARRIER", best_fast_barrier, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.000, noiseFloor), "FAST_BARRIER", best_fast_barrier, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["FAST_BARRIER"] = to_string(best_fast_barrier);
     }
 
@@ -814,7 +854,7 @@ void Tune::tune() {
       else
         log("Best TAIL_KERNELS is %u (but best may be %u when running two workers on one GPU).  Default TAIL_KERNELS is 2.\n", best_tail_kernels, best_tail_kernels | 1);
       if (best_cost >= 99999.0) { log("  WARNING: every TAIL_KERNELS value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.000, "TAIL_KERNELS", best_tail_kernels, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.000, noiseFloor), "TAIL_KERNELS", best_tail_kernels, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TAIL_KERNELS"] = to_string(best_tail_kernels);
     }
 
@@ -836,7 +876,7 @@ void Tune::tune() {
       }
       log("Best TAIL_TRIGS is %u.  Default TAIL_TRIGS is 2.\n", best_tail_trigs);
       if (best_cost >= 99999.0) { log("  WARNING: every TAIL_TRIGS value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TAIL_TRIGS", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TAIL_TRIGS", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TAIL_TRIGS"] = to_string(best_tail_trigs);
     }
 
@@ -858,7 +898,7 @@ void Tune::tune() {
       }
       log("Best TAIL_TRIGS31 is %u.  Default TAIL_TRIGS31 is 0.\n", best_tail_trigs);
       if (best_cost >= 99999.0) { log("  WARNING: every TAIL_TRIGS31 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TAIL_TRIGS31", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TAIL_TRIGS31", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TAIL_TRIGS31"] = to_string(best_tail_trigs);
     }
 
@@ -880,7 +920,7 @@ void Tune::tune() {
       }
       log("Best TAIL_TRIGS32 is %u.  Default TAIL_TRIGS32 is 2.\n", best_tail_trigs);
       if (best_cost >= 99999.0) { log("  WARNING: every TAIL_TRIGS32 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TAIL_TRIGS32", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TAIL_TRIGS32", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TAIL_TRIGS32"] = to_string(best_tail_trigs);
     }
 
@@ -903,7 +943,7 @@ void Tune::tune() {
       }
       log("Best TAIL_TRIGS61 is %u.  Default TAIL_TRIGS61 is 0.\n", best_tail_trigs);
       if (best_cost >= 99999.0) { log("  WARNING: every TAIL_TRIGS61 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TAIL_TRIGS61", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TAIL_TRIGS61", best_tail_trigs, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TAIL_TRIGS61"] = to_string(best_tail_trigs);
     }
 
@@ -925,7 +965,7 @@ void Tune::tune() {
       }
       log("Best TABMUL_CHAIN is %u.  Default TABMUL_CHAIN is 0.\n", best_tabmul_chain);
       if (best_cost >= 99999.0) { log("  WARNING: every TABMUL_CHAIN value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TABMUL_CHAIN", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TABMUL_CHAIN", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TABMUL_CHAIN"] = to_string(best_tabmul_chain);
     }
 
@@ -947,7 +987,7 @@ void Tune::tune() {
       }
       log("Best TABMUL_CHAIN31 is %u.  Default TABMUL_CHAIN31 is 0.\n", best_tabmul_chain);
       if (best_cost >= 99999.0) { log("  WARNING: every TABMUL_CHAIN31 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TABMUL_CHAIN31", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TABMUL_CHAIN31", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TABMUL_CHAIN31"] = to_string(best_tabmul_chain);
     }
 
@@ -969,7 +1009,7 @@ void Tune::tune() {
       }
       log("Best TABMUL_CHAIN32 is %u.  Default TABMUL_CHAIN32 is 0.\n", best_tabmul_chain);
       if (best_cost >= 99999.0) { log("  WARNING: every TABMUL_CHAIN32 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TABMUL_CHAIN32", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TABMUL_CHAIN32", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TABMUL_CHAIN32"] = to_string(best_tabmul_chain);
     }
 
@@ -992,7 +1032,7 @@ void Tune::tune() {
       }
       log("Best TABMUL_CHAIN61 is %u.  Default TABMUL_CHAIN61 is 0.\n", best_tabmul_chain);
       if (best_cost >= 99999.0) { log("  WARNING: every TABMUL_CHAIN61 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "TABMUL_CHAIN61", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "TABMUL_CHAIN61", best_tabmul_chain, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["TABMUL_CHAIN61"] = to_string(best_tabmul_chain);
     }
 
@@ -1014,7 +1054,7 @@ void Tune::tune() {
       }
       log("Best MODM31 is %u.  Default MODM31 is 0.\n", best_modm31);
       if (best_cost >= 99999.0) { log("  WARNING: every MODM31 value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "MODM31", best_modm31, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "MODM31", best_modm31, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["MODM31"] = to_string(best_modm31);
     }
 
@@ -1036,7 +1076,7 @@ void Tune::tune() {
       }
       log("Best UNROLL_W is %u.  Default UNROLL_W is %u.\n", best_unroll_w, AMDGPU ? 0 : 1);
       if (best_cost >= 99999.0) { log("  WARNING: every UNROLL_W value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "UNROLL_W", best_unroll_w, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "UNROLL_W", best_unroll_w, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["UNROLL_W"] = to_string(best_unroll_w);
     }
 
@@ -1058,7 +1098,7 @@ void Tune::tune() {
       }
       log("Best UNROLL_H is %u.  Default UNROLL_H is %u.\n", best_unroll_h, AMDGPU && defaultShape->height >= 1024 ? 0 : 1);
       if (best_cost >= 99999.0) { log("  WARNING: every UNROLL_H value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "UNROLL_H", best_unroll_h, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "UNROLL_H", best_unroll_h, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["UNROLL_H"] = to_string(best_unroll_h);
     }
 
@@ -1080,7 +1120,7 @@ void Tune::tune() {
       }
       log("Best ZEROHACK_W is %u.  Default ZEROHACK_W is 1.\n", best_zerohack_w);
       if (best_cost >= 99999.0) { log("  WARNING: every ZEROHACK_W value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "ZEROHACK_W", best_zerohack_w, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "ZEROHACK_W", best_zerohack_w, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["ZEROHACK_W"] = to_string(best_zerohack_w);
     }
 
@@ -1102,7 +1142,7 @@ void Tune::tune() {
       }
       log("Best ZEROHACK_H is %u.  Default ZEROHACK_H is 1.\n", best_zerohack_h);
       if (best_cost >= 99999.0) { log("  WARNING: every ZEROHACK_H value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "ZEROHACK_H", best_zerohack_h, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "ZEROHACK_H", best_zerohack_h, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["ZEROHACK_H"] = to_string(best_zerohack_h);
     }
 
@@ -1124,7 +1164,7 @@ void Tune::tune() {
       }
       log("Best BIGLIT is %u.  Default BIGLIT is 1.  The BIGLIT=0 option will probably be deprecated.\n", best_biglit);
       if (best_cost >= 99999.0) { log("  WARNING: every BIGLIT value computed wrong results here -- this pick is meaningless, do not trust it.\n"); }
-      configsUpdate(current_cost, best_cost, 0.003, "BIGLIT", best_biglit, newConfigKeyVals, suggestedConfigKeyVals);
+      configsUpdate(current_cost, best_cost, std::max(0.003, noiseFloor), "BIGLIT", best_biglit, newConfigKeyVals, suggestedConfigKeyVals);
       args->flags["BIGLIT"] = to_string(best_biglit);
     }
 

@@ -306,19 +306,52 @@ window still clears 1.5 seconds. A `quick=` argument is honoured as a ceiling
 on speed only -- it can ask for more accuracy than that, never less. On the
 same shape the spread across those option values falls from 8x to 5%.
 
-Measured after, interleaved so clock drift cannot land on one arm:
+Measured after, config present on one round and parked on the next so drift
+cannot land on one arm:
 
 | exponent | transform chosen | tuned vs stock |
 |---|---|--:|
-| M5378909 | `3:256:2:256:101` | 0.2% slower (neutral) |
-| M82589933 | `1:512:8:256:101` | **2.4% faster** |
+| M5378909 | `3:256:2:256:101` | 51.7 vs 51.6 us/it -- neutral |
+| M82589933 | `1:512:8:256:101` | 852 vs 839 us/it -- neutral |
 
-M5378909 comes out neutral because for that transform none of these options
-move it -- every value measured inside 5% of every other. That is the correct
-answer, and the previous behaviour was to write the noise down as a 3x
-regression instead. M82589933 is the case a tune is actually for, and the
-transform it picks is the one an exhaustive head-to-head of every safe shape
-confirms is fastest.
+Both neutral, and that is the finding: **on this GPU these kernel options do not
+produce a win this measurement can see.** Every value in a block lands inside a
+few percent of every other, which is why the previous behaviour -- writing the
+best of them down as an active setting -- was recording coin tosses. The
+transforms chosen are the ones an exhaustive head-to-head of every safe shape
+confirms fastest, so what the tune contributes here is the shape, not the
+options.
+
+One interim measurement said M82589933 came out 2.4% faster tuned, consistently
+across four rounds. It did not replicate: repeated later under sustained load,
+with the same config and the same shape, the same comparison gives 3 rounds of 6
+ahead and a mean of 0.45%, scatter +/-4%. The absolute level had moved from
+691-711 to 800-893 us/it between the two, the GPU having warmed up. Recorded
+because it is a good illustration of the trap this whole entry is about: four
+consistent rounds looked like a result and were a thermal state.
+
+**An option now has to beat the current setting by more than the measurement
+noise to be recommended.** `configsUpdate`'s margins were constants -- 0.003 at
+most call sites, 0.000 at six of them -- so anything 1% ahead was written as an
+active `-use` line, while run-to-run variation on one shape is around 2-3%. Half
+those lines were coin tosses.
+
+`--tune` now measures the floor instead of assuming it: after fixing the
+transform and the iteration count it times that exact configuration four times
+over and takes the spread, which on `1:512:8:256:101` came to 3.4% (821.2 to
+848.9 us/it). Each call site keeps its own literal as a lower bound, so the
+threshold is `max(what the author wanted, what the hardware can resolve)`.
+
+The estimate is taken the way the option search itself measures -- repeat runs
+inside the one process -- because that is the noise those measurements are
+actually subject to, and it re-measures per tune, so a quiet machine admits
+more settings than a loaded one.
+
+Nothing is discarded by this. A sub-threshold win still gets written, into the
+commented "slightly faster" block that already says it wants timing over a
+longer duration before being trusted; the change only moves the line between
+recommended and suggested to where the measurement can support it. On
+M82589933 that moved five of twelve settings across.
 
 **Not done: a "V-trace"/Pair95 stage 2.**
 [PrMers](https://github.com/cherubrock-seb/PrMers) runs its P-1 stage 2 on the
