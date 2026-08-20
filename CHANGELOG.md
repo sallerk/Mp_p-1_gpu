@@ -202,6 +202,15 @@ The residue is a limit worth knowing: run-to-run GPU clock variation is around
 than about 5%. At M65000011 the top two are 2% apart and it takes either. What
 the search now reliably avoids is the large mistake, which is what mattered.
 
+**The tune suggestion is now only printed where a tune could pay for itself.**
+A run with no usable tune.txt used to close with "Consider: Mp_p-1_gpu.exe
+--tune quick=10,minexp=...,maxexp=..." at every exponent. --tune runs for
+15-90 minutes; a 6- or 7-digit job finishes in well under one, so at that size
+the advice was recommending an hour of setup to speed up something already
+over. It is suppressed below 8 digits. The factual line above it, that no
+tune.txt entry covers this exponent, stays -- it explains why the candidates
+being timed are untuned ones.
+
 Selection costs 7-23s across the range from M786433 to M120000007, scaling
 with transform size. The exception is M51900019, where four transforms fail
 their correctness check before a working one appears and push it to 50s -- the
