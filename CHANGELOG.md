@@ -258,13 +258,67 @@ unaffected in the sense that matters: a tune still measures from the stock
 baseline, a selftest now tests the engine rather than one tuning, and `--bench`
 -- which does have exactly one exponent -- applies a tuning measured for it.
 
-Not fixed here, and worth knowing before trusting a tune-config at all: the
-option search itself still measures against a hard-coded shape (`512:15:512`
-FP64, or `512:8:512` for the NTT) at that shape's own top exponent, not against
-the shape the target exponent will actually use. So the range now recorded is
-the range the tune was *aimed* at, not the transform its numbers came from.
-Gating on it stops the options leaking onto unrelated exponents; making them
-right for the exponent they claim is a separate change.
+Tagging the block keeps a tune-config off exponents it was not measured for,
+but on its own it says nothing about whether the tune was right for the
+exponent it *does* claim -- and it was not, because the option search measured
+against a shape hard-coded in `tune.cpp` rather than the one that exponent
+selects. That is the next entry.
+
+**`--tune` now picks the transform first and trains the kernel options on it.**
+It ran the other way round: the option search measured against a shape
+hard-coded in `tune.cpp` -- `FFT64 512:15:512`, or `FFT3161 512:8:512` for the
+NTT side -- at that shape's own top exponent, whatever the tune was aimed at.
+So the winners of ~50 measurements described a 7.5M-word transform at around
+150M, and were written to a file a run then applies to whatever transform its
+own exponent selects. That mismatch is what cost ~32% per squaring, and the
+exponent tag added above only kept it off *other* exponents; it did nothing
+about the tune being wrong for its own.
+
+`--tune` now calls `chooseVerifiedFFT`, the same selector a real run uses, at
+the exponent the tune targets, and the option search trains on whatever comes
+back. The hard-coded shapes are gone, and so is the FP64-versus-NTT probe that
+timed two fixed shapes at a fixed `141000001` to guess which arithmetic this
+GPU prefers -- picking the transform for the target exponent answers that by
+measuring the shapes that are actually candidates.
+
+Which options get searched now follows from that shape's own arithmetic. An
+option like `MODM31` used to be measured against a substitute shape that had
+GF31 even when the target transform had none, and the winner still went into a
+file that applies it to every job. Options for arithmetic the chosen transform
+does not contain are simply not searched: tuning M5378909 runs 14 steps rather
+than 22, because its transform is a pure M61 NTT with no GF31, FP32 or FP64
+work in it at all.
+
+**This exposed a second bug, and it is the more interesting one.** `quick` is an
+iteration count, and against a 7.5M-word transform even its shortest setting --
+400 iterations -- is nearly three seconds of work. Pointed at the transform an
+exponent actually uses, that assumption collapses: at 262144 words an iteration
+takes about 50us, so 400 iterations is **20 milliseconds** of timing, which
+measures launch overhead and clock state rather than the kernel. One such run
+reported `3:256:2:256:101` at 57.3, 173.0, 220.6, 372.8, 419.5, 446.2 and 458.7
+us/it across adjacent option values whose true cost is about 52 -- then wrote
+the noise out as winners. The resulting config made M5378909 **3x slower** than
+no tuning at all.
+
+So the measurement scale now comes from the transform rather than a constant:
+`--tune` probes the chosen shape once and uses the shortest run whose timed
+window still clears 1.5 seconds. A `quick=` argument is honoured as a ceiling
+on speed only -- it can ask for more accuracy than that, never less. On the
+same shape the spread across those option values falls from 8x to 5%.
+
+Measured after, interleaved so clock drift cannot land on one arm:
+
+| exponent | transform chosen | tuned vs stock |
+|---|---|--:|
+| M5378909 | `3:256:2:256:101` | 0.2% slower (neutral) |
+| M82589933 | `1:512:8:256:101` | **2.4% faster** |
+
+M5378909 comes out neutral because for that transform none of these options
+move it -- every value measured inside 5% of every other. That is the correct
+answer, and the previous behaviour was to write the noise down as a 3x
+regression instead. M82589933 is the case a tune is actually for, and the
+transform it picks is the one an exhaustive head-to-head of every safe shape
+confirms is fastest.
 
 **Not done: a "V-trace"/Pair95 stage 2.**
 [PrMers](https://github.com/cherubrock-seb/PrMers) runs its P-1 stage 2 on the

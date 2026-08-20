@@ -603,24 +603,23 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
       if (usable(e.fft)) { addUnique(e.fft); }
     }
     const size_t nTuned = candidates.size();
-    if (!nTuned) {
-      log("  no tune.txt entry covers M%u.\n", E);
-      // Only suggest tuning where a tune could pay for itself. --tune runs for
-      // 15-90 minutes; a 6- or 7-digit exponent is a job of well under a
-      // minute, so the advice was recommending an hour of setup to speed up
-      // something already finished. It is not a close call at that size.
-      //
-      // What a tune.txt buys is candidate ORDER, and since the search below
-      // measures candidates rather than trusting their order, that is worth
-      // less than it used to be: at every exponent checked from M786433 to
-      // M120000007 the untuned path found the same transform a tuned one
-      // would have. Above this threshold it still saves the search some work,
-      // which is why the suggestion survives there.
-      const u32 TUNE_ADVICE_MIN_EXPONENT = 10000000;   // 8 digits
-      if (E >= TUNE_ADVICE_MIN_EXPONENT) {
-        log("  Consider:  Mp_p-1_gpu.exe --tune quick=10,minexp=%u,maxexp=%u\n",
-            E, E);
-      }
+    // Say nothing about tuning where a tune could not pay for itself. --tune
+    // runs for 15-90 minutes; a 6- or 7-digit exponent is a job of well under
+    // a minute, so this was reporting a missing file the reader has no reason
+    // to want, above advice to spend an hour speeding up something already
+    // finished.
+    //
+    // What a tune.txt buys is candidate ORDER, and since the search below
+    // measures candidates rather than trusting their order, that is worth less
+    // than it used to be: at every exponent checked from M786433 to M120000007
+    // the untuned path found the same transform a tuned one would have. Above
+    // this threshold it still saves the search some work, so both lines
+    // survive there.
+    const u32 TUNE_ADVICE_MIN_EXPONENT = 10000000;   // 8 digits
+    if (!nTuned && E >= TUNE_ADVICE_MIN_EXPONENT) {
+      log("  no tune.txt entry covers M%u.\n"
+          "  Consider:  Mp_p-1_gpu.exe --tune quick=10,minexp=%u,maxexp=%u\n",
+          E, E, E);
     }
 
     // 2. An INDEPENDENT fallback. Note FFTConfig::bestFit() also reads

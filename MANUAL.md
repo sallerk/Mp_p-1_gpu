@@ -199,12 +199,19 @@ tune has to be reproducible, and a selftest should test the engine rather than
 one tuning. `--bench` does apply a tuning matching its exponent, since the
 number it reports is meant to be the number a real run of that exponent gets.
 
-**Known limitation.** The option search still measures against a hard-coded
-shape (`512:15:512` FP64, or `512:8:512` for the NTT) at that shape's own top
-exponent, rather than against the shape your exponent will actually use. The
-recorded range is therefore what the tune was *aimed* at, not where its numbers
-came from. Gating on it keeps the options off unrelated exponents; making them
-correct for the exponent they claim is still to do.
+`--tune` picks the transform before it tunes anything: it runs the same
+selector a real run uses, at the exponent it is targeting, and measures the
+options against whatever that returns. So the recorded range describes where
+the numbers actually came from. Options for arithmetic the chosen transform
+does not contain are not searched at all, which is why tuning a small exponent
+takes fewer steps than a wavefront one.
+
+It also sizes its own measurements. `quick=` is an iteration count, and the
+right number of iterations depends entirely on the transform — 400 of them is
+three seconds on a 7.5M-word FFT and twenty milliseconds on a 262144-word one.
+`--tune` probes the chosen shape and uses the shortest run whose timed window
+still clears 1.5 seconds, so a `quick=` you pass is treated as a ceiling on
+speed: it can ask for more accuracy, never less.
 
 ### Picking the transform
 

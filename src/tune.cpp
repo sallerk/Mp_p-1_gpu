@@ -20,6 +20,12 @@ using std::accumulate;
 
 using namespace std;
 
+// The FFT selector a real run uses (Selftest.cpp). --tune calls it so the
+// kernel options below are measured on the transform the job will actually
+// use, rather than on a shape hard-coded here.
+FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
+                            const std::string& forcedSpec, bool verify);
+
 // split() was defined here upstream even though it is declared in common.h.
 // This program compiles common.cpp unconditionally but tune.cpp only for -tune,
 // so the definition was moved to common.cpp; keeping a copy here would be a
@@ -372,6 +378,16 @@ void Tune::tune() {
   if (quick < 1) quick = 1;
   if (quick > 10) quick = 10;
 
+  // Which families the tune.txt shape sweep covers. These used to be set as a
+  // side effect of a probe that timed a hard-coded FP64 shape against a
+  // hard-coded NTT one at a hard-coded exponent, to decide what this GPU
+  // prefers. That probe is gone -- choosing the transform for the target
+  // exponent answers the same question by measuring the shapes that are
+  // actually candidates. main.cpp passes "fp64,ntt" for any real --tune, so
+  // this only catches Tune being driven with neither named, where sweeping
+  // nothing would be the wrong answer.
+  if (!time_FFTs && !time_NTTs) { time_FFTs = time_NTTs = 1; }
+
   // Look for best settings of various options.  Append best settings to config.txt.
   if (tune_config) {
     vector<pair<string,int>> newConfigKeyVals;
@@ -437,62 +453,121 @@ void Tune::tune() {
       return false;
     };
 
-    // If user gave us an fft-spec, use that to time options
+    // Pick the transform FIRST, then tune the kernels against it.
+    //
+    // This used to run the other way round. The option search measured against
+    // a shape hard-coded right here -- FFT64 512:15:512, or FFT3161 512:8:512
+    // for the NTT side -- at that shape's own top exponent, whatever the tune
+    // was actually aimed at. So the winners of ~50 measurements described a
+    // 7.5M-word transform at around 150M, and were then written to a file that
+    // a run applies to whatever transform ITS exponent selects. Replaying one
+    // such file against a shape it was not measured on cost about 32% per
+    // squaring, worse than not tuning at all.
+    //
+    // chooseVerifiedFFT is the selector a real run uses: same code, same
+    // exponent, same verification. Whatever it hands back is what the options
+    // get trained on, so the file finally describes the transform it will be
+    // applied to.
+    //
+    // It reads tune.txt, which this run is about to rewrite. That is circular
+    // only in appearance: the selector TIMES its candidates rather than
+    // trusting the order they arrive in, so a stale entry that is no longer
+    // fastest simply loses the comparison it is entered into.
+    //
+    // Which exponent this tune is FOR: main.cpp injects
+    // minexp=maxexp=<the worktodo exponent> for a bare --tune, so a point tune
+    // is the ordinary case and needs no guessing. For a deliberate range, train
+    // on the top of it -- a shape that can hold max_exponent can hold
+    // everything below, so it is the one choice usable across the whole range.
+    // With -fft the range is the 0..1e12 sentinel and means nothing; the forced
+    // shape's own ceiling is the only exponent that does.
+    u32 tuneExponent;
     if (!args->fftSpec.empty()) {
-      defaultShape = &shapes[0];
-      if (shapes[0].fft_type == FFT64) {
-        defaultFFTShape = shapes[0];
-        time_FFTs = 1;
-      } else {
-        defaultNTTShape = shapes[0];
-        time_NTTs = 1;
-      }
+      const FFTConfig probe{shapes[0], shapes[0].fft_type == FFT64 ? 101u : 202u, CARRY_AUTO};
+      tuneExponent = primes.prevPrime(u32(probe.maxBpw() * 0.95 * probe.size()));
+    } else {
+      tuneExponent = u32(std::min<u64>(max_exponent, 0xfffffffful));
     }
-    // If user specified FP64-timings, time a wavefront exponent using an 7.5M FFT
-    // If user specified NTT-timings, time a wavefront exponent using an 4M M31+M61 NTT
-    else if (time_FFTs || time_NTTs) {
-      if (time_FFTs) {
-        defaultFFTShape = FFTShape(FFT64, 512, 15, 512);
-        defaultShape = &defaultFFTShape;
-      }
-      if (time_NTTs) {
-        defaultNTTShape = FFTShape(FFT3161, 512, 8, 512);
-        defaultShape = &defaultNTTShape;
-      }
+
+    log("\nChoosing the transform M%u would use, before tuning anything against it.\n",
+        tuneExponent);
+    const FFTConfig tunedFFT = chooseVerifiedFFT(shared, q, tuneExponent, args->fftSpec, true);
+    log("Tuning kernel options on %s -- the transform M%u selects.\n",
+        tunedFFT.spec().c_str(), tuneExponent);
+
+    if (tunedFFT.shape.fft_type == FFT64) {
+      defaultFFTShape = tunedFFT.shape;
+      defaultShape = &defaultFFTShape;
+    } else {
+      defaultNTTShape = tunedFFT.shape;
+      defaultShape = &defaultNTTShape;
     }
-    // No user specifications.  Time an FP64 FFT and a GF31*GF61 NTT to see if the GPU is more suited for FP64 work or NTT work.
-    else {
-      log("Checking whether this GPU is better suited for double-precision FFTs or integer NTTs.\n");
-      defaultFFTShape = FFTShape(FFT64, 512, 16, 512);
-      FFTConfig fft{defaultFFTShape, 101, CARRY_32};
-      double fp64_time = Gpu::make(q, 141000001, shared, fft, {}, false)->timePRP(quick);
-      log("Time for FP64 FFT %12s is %s\n", fft.spec().c_str(), fmtCost(fp64_time).c_str());
-      defaultNTTShape = FFTShape(FFT3161, 512, 8, 512);
-      FFTConfig ntt{defaultNTTShape, 202, CARRY_AUTO};
-      double ntt_time = Gpu::make(q, 141000001, shared, ntt, {}, false)->timePRP(quick);
-      log("Time for M31*M61 NTT %12s is %s\n", ntt.spec().c_str(), fmtCost(ntt_time).c_str());
-      if (fp64_time < ntt_time) {
-        defaultShape = &defaultFFTShape;
-        time_FFTs = 1;
-        if (fp64_time < 0.80 * ntt_time) {
-          log("FP64 FFTs are significantly faster than integer NTTs.  No NTT tuning will be performed.\n");
-        } else {
-          log("FP64 FFTs are not significantly faster than integer NTTs.  NTT tuning will be performed.\n");
-          time_NTTs = 1;
+    u32 variant = tunedFFT.variant;
+
+    // Every option is measured at the exponent the job will run, backed off
+    // only where that sits within 5% of this shape's round-off ceiling: some
+    // options move maxBpw, and a measurement that trips the residue check is
+    // worth nothing. Which exponent it is barely matters anyway -- a fixed
+    // transform's cost per iteration is flat across its whole usable range
+    // (measured 900.6 vs 895.5 us/it for one shape from M84000013 to
+    // M99700031) -- what matters is that it is the right SHAPE.
+    const u32 optExponent = primes.prevPrime(
+        std::min<u32>(tuneExponent,
+                      u32(tunedFFT.maxBpw() * 0.95 * tunedFFT.size())) + 1);
+
+    // Which option families are worth searching follows from the chosen
+    // shape's own arithmetic, not from which shape families the tune.txt sweep
+    // happens to cover. Before, an option like MODM31 was measured against a
+    // substitute shape that had GF31 even when the target transform had none,
+    // and the winner still went into a file that applies it to every job.
+    // How long to measure each option for.
+    //
+    // timePRP's `quick` is an ITERATION count, and the option search used to
+    // run against a hard-coded 7.5M-word transform, where even its shortest
+    // setting -- 400 iterations -- is nearly three seconds of work. Pointing
+    // the search at the transform the exponent actually uses breaks that
+    // assumption completely: at 262144 words an iteration takes about 50us, so
+    // those same 400 iterations are 20 MILLISECONDS of timing. That measures
+    // launch overhead and whatever the clocks were doing, not the kernel.
+    //
+    // It is not a subtle effect. One such run on 3:256:2:256:101 reported the
+    // same shape at 57.3, 173.0, 220.6, 372.8, 419.5, 446.2 and 458.7 us/it
+    // across adjacent option values whose true cost is about 52, then wrote
+    // out the noise as winners: the resulting config made M5378909 3x SLOWER
+    // than no tuning at all. Choosing the right shape to tune on is worth
+    // nothing if the measurement cannot see it.
+    //
+    // So take the scale from the transform rather than from a constant. Probe
+    // the cost once, then use the shortest run whose timed window still clears
+    // the target. A user-supplied quick= is honoured as a ceiling on speed
+    // only -- it can ask for more accuracy than this, never less, because less
+    // is what produced the 3x regression.
+    {
+      const double TARGET_SECONDS = 1.5;
+      // Iterations per quick level, from Gpu::timePRP.
+      static const u32 QUICK_ITERS[11] =
+        {0, 20000, 12000, 8000, 5000, 3000, 1800, 1200, 900, 600, 400};
+      const double probe = Gpu::make(q, optExponent, shared, tunedFFT, {}, false)->timePRP(10);
+      if (probe < 99999.0) {
+        int autoQuick = 1;
+        for (int level = 10; level >= 1; --level) {
+          if (QUICK_ITERS[level] * probe * 1e-6 >= TARGET_SECONDS) { autoQuick = level; break; }
         }
-      } else {
-        defaultShape = &defaultNTTShape;
-        time_NTTs = 1;
-        if (fp64_time > 1.20 * ntt_time) {
-          log("FP64 FFTs are significantly slower than integer NTTs.  No FP64 tuning will be performed.\n");
-        } else {
-          log("FP64 FFTs are not significantly slower than integer NTTs.  FP64 tuning will be performed.\n");
-          time_FFTs = 1;
+        if (autoQuick < quick) {
+          log("%s runs at %.0f us/it, so quick=%d would time only %.0f ms per option."
+              " Using quick=%d (%u iterations, %.1fs) instead.\n",
+              tunedFFT.spec().c_str(), probe, quick,
+              QUICK_ITERS[quick] * probe * 1e-3, autoQuick,
+              QUICK_ITERS[autoQuick], QUICK_ITERS[autoQuick] * probe * 1e-6);
+          quick = autoQuick;
         }
       }
     }
 
-    u32 variant = (defaultShape == &defaultFFTShape) ? 101 : 202;
+    const bool optFP64 = tunedFFT.FFT_FP64;
+    const bool optFP32 = tunedFFT.FFT_FP32;
+    const bool optGF31 = tunedFFT.NTT_GF31;
+    const bool optGF61 = tunedFFT.NTT_GF61;
 
     // Verify the baseline before trusting ~50 measurements against it. If
     // nothing usable is found the option search is skipped: running it anyway
@@ -502,17 +577,11 @@ void Tune::tune() {
     const bool baselineOk = useWorkingShape(*defaultShape, variant,
                                             defaultShape == &defaultFFTShape ? "FP64" : "NTT");
 
-    // TAIL_TRIGS32 and TABMUL_CHAIN32 (below) test against a *different*
-    // shape than the one just verified: defaultNTTShape is the GF31*GF61
-    // shape (FFT3161), not FP32, so those two blocks swap in
-    // FFT3261:512:8:512 instead. That substitute was never run through the
-    // same check -- on hardware where it fails (the same class of problem
-    // useWorkingShape() exists for), every option value comes back as an
-    // identical residue-check failure, and "Best ..." ends up picked from
-    // noise. Verify it here too, once, the same way.
-    FFTShape defaultFP32Shape(FFT3261, 512, 8, 512);
-    const bool fp32BaselineOk = !(time_NTTs && time_FP32)
-                              || useWorkingShape(defaultFP32Shape, 202, "FP32");
+    // TAIL_TRIGS32 and TABMUL_CHAIN32 used to be measured against a shape
+    // substituted in here, because the hard-coded NTT baseline (FFT3161) has
+    // no FP32 to tune. There is no substitute now: those options are searched
+    // when the chosen transform has FP32 and skipped when it does not, so they
+    // run on the same verified shape as everything else.
 
     log("\n");
     if (baselineOk) {
@@ -534,15 +603,16 @@ void Tune::tune() {
     // already guards on.
     const u32 totalSteps = 12
                           + (AMDGPU ? 1 : 0)
-                          + (time_FFTs ? 3 : 0)
-                          + (time_NTTs ? 5 : 0)
-                          + (time_NTTs && time_FP32 ? 2 : 0);
+                          + (optFP64 ? 3 : 0)                  // TAIL_TRIGS, TABMUL_CHAIN, BIGLIT
+                          + (optGF31 ? 3 : 0)                  // *31 and MODM31
+                          + (optGF61 ? 2 : 0)                  // *61
+                          + (optFP32 && time_FP32 ? 2 : 0);    // *32
     u32 step = 0;
 
     // Find best IN_WG,IN_SIZEX,OUT_WG,OUT_SIZEX settings
     if (1/*option to time IN/OUT settings*/) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best IN_WG, IN_SIZEX...\n", ++step, totalSteps);
       u32 best_in_wg = 0;
       u32 best_in_sizex = 0;
@@ -594,8 +664,8 @@ void Tune::tune() {
 
     // Find best PAD setting.  Default is 256 bytes for AMD, 0 for all others.
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best PAD...\n", ++step, totalSteps);
       u32 best_pad = 0;
       u32 current_pad = args->value("PAD", AMDGPU ? 256 : 0);
@@ -616,8 +686,8 @@ void Tune::tune() {
 
     // Find best MIDDLE_IN_LDS_TRANSPOSE setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best MIDDLE_IN_LDS_TRANSPOSE...\n", ++step, totalSteps);
       u32 best_middle_in_lds_transpose = 0;
       u32 current_middle_in_lds_transpose = args->value("MIDDLE_IN_LDS_TRANSPOSE", 1);
@@ -638,8 +708,8 @@ void Tune::tune() {
 
     // Find best MIDDLE_OUT_LDS_TRANSPOSE setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best MIDDLE_OUT_LDS_TRANSPOSE...\n", ++step, totalSteps);
       u32 best_middle_out_lds_transpose = 0;
       u32 current_middle_out_lds_transpose = args->value("MIDDLE_OUT_LDS_TRANSPOSE", 1);
@@ -660,8 +730,8 @@ void Tune::tune() {
 
     // Find best INPLACE setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best INPLACE...\n", ++step, totalSteps);
       u32 best_inplace = 0;
       double best_cost = -1.0;
@@ -681,8 +751,8 @@ void Tune::tune() {
 
     // Find best NONTEMPORAL setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best NONTEMPORAL...\n", ++step, totalSteps);
       u32 best_nontemporal = 0;
       u32 current_nontemporal = args->value("NONTEMPORAL", 0);
@@ -703,8 +773,8 @@ void Tune::tune() {
 
     // Find best FAST_BARRIER setting
     if (AMDGPU) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best FAST_BARRIER...\n", ++step, totalSteps);
       u32 best_fast_barrier = 0;
       u32 current_fast_barrier = args->value("FAST_BARRIER", 0);
@@ -725,8 +795,8 @@ void Tune::tune() {
 
     // Find best TAIL_KERNELS setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TAIL_KERNELS...\n", ++step, totalSteps);
       u32 best_tail_kernels = 0;
       u32 current_tail_kernels = args->value("TAIL_KERNELS", 2);
@@ -749,9 +819,9 @@ void Tune::tune() {
     }
 
     // Find best TAIL_TRIGS setting
-    if (time_FFTs) {
+    if (optFP64) {
       FFTConfig fft{defaultFFTShape, 101, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TAIL_TRIGS...\n", ++step, totalSteps);
       u32 best_tail_trigs = 0;
       u32 current_tail_trigs = args->value("TAIL_TRIGS", 2);
@@ -771,10 +841,9 @@ void Tune::tune() {
     }
 
     // Find best TAIL_TRIGS31 setting
-    if (time_NTTs) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
-      if (!fft.NTT_GF31) fft = FFTConfig(FFTShape(FFT3161, 512, 8, 512), 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxExp());
+    if (optGF31) {
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TAIL_TRIGS31...\n", ++step, totalSteps);
       u32 best_tail_trigs = 0;
       u32 current_tail_trigs = args->value("TAIL_TRIGS31", 0);
@@ -794,10 +863,9 @@ void Tune::tune() {
     }
 
     // Find best TAIL_TRIGS32 setting
-    if (time_NTTs && time_FP32 && fp32BaselineOk) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
-      if (!fft.FFT_FP32) fft = FFTConfig(defaultFP32Shape, 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxBpw() * 0.95 * fft.shape.size());   // Back off the maxExp as different settings will have different maxBpw
+    if (optFP32 && time_FP32) {
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TAIL_TRIGS32...\n", ++step, totalSteps);
       u32 best_tail_trigs = 0;
       u32 current_tail_trigs = args->value("TAIL_TRIGS32", 2);
@@ -817,10 +885,10 @@ void Tune::tune() {
     }
 
     // Find best TAIL_TRIGS61 setting
-    if (time_NTTs) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
+    if (optGF61) {
+      FFTConfig fft = tunedFFT;
       if (!fft.NTT_GF61) fft = FFTConfig(FFTShape(FFT3161, 512, 8, 512), 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TAIL_TRIGS61...\n", ++step, totalSteps);
       u32 best_tail_trigs = 0;
       u32 current_tail_trigs = args->value("TAIL_TRIGS61", 0);
@@ -840,9 +908,9 @@ void Tune::tune() {
     }
 
     // Find best TABMUL_CHAIN setting
-    if (time_FFTs) {
+    if (optFP64) {
       FFTConfig fft{defaultFFTShape, 101, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TABMUL_CHAIN...\n", ++step, totalSteps);
       u32 best_tabmul_chain = 0;
       u32 current_tabmul_chain = args->value("TABMUL_CHAIN", 0);
@@ -862,10 +930,9 @@ void Tune::tune() {
     }
 
     // Find best TABMUL_CHAIN31 setting
-    if (time_NTTs) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
-      if (!fft.NTT_GF31) fft = FFTConfig(FFTShape(FFT3161, 512, 8, 512), 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxExp());
+    if (optGF31) {
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TABMUL_CHAIN31...\n", ++step, totalSteps);
       u32 best_tabmul_chain = 0;
       u32 current_tabmul_chain = args->value("TABMUL_CHAIN31", 0);
@@ -885,10 +952,9 @@ void Tune::tune() {
     }
 
     // Find best TABMUL_CHAIN32 setting
-    if (time_NTTs && time_FP32 && fp32BaselineOk) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
-      if (!fft.FFT_FP32) fft = FFTConfig(defaultFP32Shape, 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxBpw() * 0.95 * fft.shape.size());   // Back off the maxExp as different settings will have different maxBpw
+    if (optFP32 && time_FP32) {
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TABMUL_CHAIN32...\n", ++step, totalSteps);
       u32 best_tabmul_chain = 0;
       u32 current_tabmul_chain = args->value("TABMUL_CHAIN32", 0);
@@ -908,10 +974,10 @@ void Tune::tune() {
     }
 
     // Find best TABMUL_CHAIN61 setting
-    if (time_NTTs) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
+    if (optGF61) {
+      FFTConfig fft = tunedFFT;
       if (!fft.NTT_GF61) fft = FFTConfig(FFTShape(FFT3161, 512, 8, 512), 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best TABMUL_CHAIN61...\n", ++step, totalSteps);
       u32 best_tabmul_chain = 0;
       u32 current_tabmul_chain = args->value("TABMUL_CHAIN61", 0);
@@ -931,10 +997,9 @@ void Tune::tune() {
     }
 
     // Find best MODM31 setting
-    if (time_NTTs) {
-      FFTConfig fft{defaultNTTShape, 202, CARRY_AUTO};
-      if (!fft.NTT_GF31) fft = FFTConfig(FFTShape(FFT3161, 512, 8, 512), 202, CARRY_AUTO);
-      u32 exponent = primes.prevPrime(fft.maxExp());
+    if (optGF31) {
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best MODM31...\n", ++step, totalSteps);
       u32 best_modm31 = 0;
       u32 current_modm31 = args->value("MODM31", 0);
@@ -955,8 +1020,8 @@ void Tune::tune() {
 
     // Find best UNROLL_W setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best UNROLL_W...\n", ++step, totalSteps);
       u32 best_unroll_w = 0;
       u32 current_unroll_w = args->value("UNROLL_W", AMDGPU ? 0 : 1);
@@ -977,8 +1042,8 @@ void Tune::tune() {
 
     // Find best UNROLL_H setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best UNROLL_H...\n", ++step, totalSteps);
       u32 best_unroll_h = 0;
       u32 current_unroll_h = args->value("UNROLL_H", AMDGPU && defaultShape->height >= 1024 ? 0 : 1);
@@ -999,8 +1064,8 @@ void Tune::tune() {
 
     // Find best ZEROHACK_W setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best ZEROHACK_W...\n", ++step, totalSteps);
       u32 best_zerohack_w = 0;
       u32 current_zerohack_w = args->value("ZEROHACK_W", 1);
@@ -1021,8 +1086,8 @@ void Tune::tune() {
 
     // Find best ZEROHACK_H setting
     if (1) {
-      FFTConfig fft{*defaultShape, variant, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best ZEROHACK_H...\n", ++step, totalSteps);
       u32 best_zerohack_h = 0;
       u32 current_zerohack_h = args->value("ZEROHACK_H", 1);
@@ -1042,9 +1107,9 @@ void Tune::tune() {
     }
 
     // Find best BIGLIT setting
-    if (time_FFTs) {
-      FFTConfig fft{*defaultShape, 101, CARRY_AUTO};
-      u32 exponent = primes.prevPrime(fft.maxExp());
+    if (optFP64) {
+      FFTConfig fft = tunedFFT;
+      const u32 exponent = optExponent;
       log("\n[%u/%u] Finding best BIGLIT...\n", ++step, totalSteps);
       u32 best_biglit = 0;
       u32 current_biglit = args->value("BIGLIT", 1);
