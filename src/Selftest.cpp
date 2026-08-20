@@ -393,9 +393,14 @@ namespace {
 // timePRP marks a failed correctness check by returning 0.1 s/iteration.
 const double TIME_PRP_FAILED = 99999.0;
 
-bool verifyOne(GpuCommon shared, Queue* q, u32 E, const FFTConfig& fft, double* cost) {
+// `quick` is Gpu::timePRP's scale: 10 is the shortest run (400 iterations),
+// 1 the longest (20000). Ten is plenty to decide whether a config computes
+// CORRECTLY, which is all this was originally for. It is not enough to decide
+// which of two working configs is faster -- see SEARCH_QUICK below.
+bool verifyOne(GpuCommon shared, Queue* q, u32 E, const FFTConfig& fft, double* cost,
+               int quick = 10) {
   try {
-    const double c = Gpu::make(q, E, shared, fft, {}, false)->timePRP(10);
+    const double c = Gpu::make(q, E, shared, fft, {}, false)->timePRP(quick);
     if (cost) { *cost = c; }
     return c < TIME_PRP_FAILED;
   } catch (const char* s) {
@@ -485,14 +490,40 @@ namespace {
 
 const char* VERIFY_CACHE = "fft-verified.txt";
 
+// How long the FFT search measures each candidate, as a Gpu::timePRP scale.
+//
+// This was 10 -- 400 iterations, about 0.3s of timed work at a wavefront
+// exponent -- and at that length the number is not a measurement of the
+// transform, it is a measurement of where the GPU's clocks happened to be.
+// Caught by disagreement with a long-run benchmark: at M65000011 a 400-
+// iteration run put 2:512:8:256:101 at 891 us/it and 2:256:16:256:101 at 667,
+// while 8000-iteration runs put them at 609 and 621 -- wrong by 46%, and in
+// the wrong order, which is what actually costs time. The same run also had
+// the :202 variant of one shape 66% apart from its :101, when a careful
+// measurement puts those two within 0.2% of each other.
+//
+// 5 is 3000 iterations, a few seconds of real work, which is where the long
+// runs became repeatable. It costs more per candidate, and that is affordable
+// only because the ordering rule above now puts the right family first: the
+// budget buys accuracy on a few good candidates instead of noise on many.
+const int SEARCH_QUICK = 5;
+
+// Tags a remembered cost with the scale it was measured at.
+string currentScale() { return "q" + std::to_string(SEARCH_QUICK); }
+
 string deviceTag(Queue* q) {
   const cl_device_id id = q->context->deviceId();
   return getDeviceName(id) + " / " + getDriverVersion(id);
 }
 
-// spec -> verified?   (only entries for this exponent and this device)
-std::map<string, bool> loadVerifyCache(u32 E, const string& tag) {
-  std::map<string, bool> out;
+// One remembered verdict: did this config compute correctly here, and how fast
+// was it? The cost is what lets a repeat run of the same exponent re-pick the
+// same winner for free -- see the search in chooseVerifiedFFT().
+struct Verdict { bool ok; double cost; };
+
+// spec -> verdict   (only entries for this exponent and this device)
+std::map<string, Verdict> loadVerifyCache(u32 E, const string& tag) {
+  std::map<string, Verdict> out;
   FILE* f = fopen(VERIFY_CACHE, "r");
   if (!f) { return out; }
   char line[512];
@@ -504,8 +535,23 @@ std::map<string, bool> loadVerifyCache(u32 E, const string& tag) {
     if (s.empty() || s[0] == '#' || !tagOk) { continue; }
     char spec[128], verdict[16];
     unsigned long long exp = 0;
-    if (sscanf(s.c_str(), "%llu %127s %15s", &exp, spec, verdict) == 3 && exp == E) {
-      out[spec] = (string(verdict) == "ok");
+    double cost = 0;
+    // The cost field is read but not required. Every line this program has ever
+    // written carries one, but treating a missing or zero cost as "unknown"
+    // rather than as "free" matters: zero would win every comparison the search
+    // below makes, and would silently pin whichever config lacked a number.
+    // Costs are only comparable when they were measured over the same number
+    // of iterations, so the scale is part of the record. An entry written by
+    // an older build carries no scale and is kept for its VERDICT only, with
+    // the cost dropped to the "unknown" sentinel -- comparing a 400-iteration
+    // number against a 3000-iteration one is exactly the mistake this whole
+    // change exists to stop.
+    char scale[16] = "";
+    const int n = sscanf(s.c_str(), "%llu %127s %15s %lf %15s",
+                         &exp, spec, verdict, &cost, scale);
+    if (n >= 3 && exp == E) {
+      const bool comparable = (n >= 5) && (string(scale) == currentScale());
+      out[spec] = Verdict{string(verdict) == "ok", (comparable && cost > 0) ? cost : 0.0};
     }
   }
   fclose(f);
@@ -522,7 +568,8 @@ void appendVerifyCache(u32 E, const string& tag, const string& spec, bool ok,
   }
   static bool wroteTag = false;
   if (!wroteTag) { fprintf(f, "# device %s\n", tag.c_str()); wroteTag = true; }
-  fprintf(f, "%u %s %s %.1f\n", E, spec.c_str(), ok ? "ok" : "bad", cost);
+  fprintf(f, "%u %s %s %.1f %s\n", E, spec.c_str(), ok ? "ok" : "bad", cost,
+          currentScale().c_str());
   fclose(f);
 }
 
@@ -578,6 +625,76 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
         if (usable(f)) { addUnique(f); }
       }
     }
+
+    // 2b. Order that fallback: smallest transform first, and within one size,
+    //     the cheapest arithmetic that still has the precision.
+    //
+    //     The enumeration above is in catalog order, which is unrelated to
+    //     speed, and only MAX_TRIES candidates ever get timed. That cost real
+    //     performance in two different ways, both measured on an RTX 3070 with
+    //     no tune.txt present:
+    //
+    //       - The fast shape sat too late to be reached. M55000013 picked
+    //         687 us/it on its first run, 650 on the second and 630 on the
+    //         third, converging only as the cache filled in. Four of twelve
+    //         exponents did this, all between 52M and 83M.
+    //       - Worse, at M20000003 it settled on 4:256:4:256 having timed
+    //         1:256:4:256 and ranked it slower. Measured properly the two are
+    //         306 and 169 us/it: it converged on a shape 81% slower than one
+    //         already in its own candidate list.
+    //
+    //     Both are fixed by ranking on precision headroom instead of catalog
+    //     position. Every family here trades speed for bits per word, so the
+    //     cheapest family whose ceiling still clears E/size is the one to try
+    //     first: on this GPU M31^2*M61 (~32 bpw) beats M31*M61 (~40) beats
+    //     M31^2*M31*M61 (~48), and plain FP64 is 4.3x off the pace at M65000011
+    //     because consumer nVidia runs FP64 at 1/64 rate. Headroom orders them
+    //     without naming any of that, which is the point -- on a card with fast
+    //     FP64 the same rule reaches for FP64 exactly where it fits.
+    //
+    //     Size has to lead, not headroom alone: a transform twice as big costs
+    //     about twice as much, and its halved bits/word would otherwise let a
+    //     tighter-fitting shape one size up sort ahead of the right answer. At
+    //     M20000003 that is the M61 shape at 1048576 words (216 us/it) jumping
+    //     the 524288-word M31*M61 (169) it should never outrank.
+    //
+    //     This is a starting ORDER, not a verdict -- the search below still
+    //     times what it is given and keeps the fastest. All the rule does is
+    //     spend the budget inside the right family instead of on discovering
+    //     which family that is. Against the 13 exponents measured from
+    //     M13466917 to M99700031 it names the true winner every time, where
+    //     catalog order managed 8 of 13 on a first run.
+    //
+    //     One more ordering term, and it is worth more than it looks. A shape
+    //     appears here once per usable variant, and for every NTT family the
+    //     bpw table is variant-independent, so the :101 and :202 of one shape
+    //     tie on both size and headroom and land side by side. They also run at
+    //     the same speed -- measured 641.4 vs 641.8, 887.4 vs 886.7, 937.2 vs
+    //     936.0 us/it across three pairs, inside 0.2% every time. Timing both
+    //     spends eight seconds to learn nothing. So every shape gets one
+    //     variant tried before any shape gets a second.
+    //
+    //     Tuned entries are deliberately left alone above: their order came
+    //     from timing this GPU, which beats any heuristic, and this only ever
+    //     rearranges the untuned tail.
+    struct Ranked { u32 dup; u64 size; double head; FFTConfig fft; };
+    std::map<string, u32> seenShape;
+    std::vector<Ranked> tail;
+    for (size_t i = nTuned; i < candidates.size(); ++i) {
+      const FFTConfig& f = candidates[i];
+      tail.push_back(Ranked{seenShape[f.shape.spec()]++, f.size(),
+                            double(f.maxBpw()) - double(E) / double(f.size()), f});
+    }
+    std::stable_sort(tail.begin(), tail.end(), [](const Ranked& a, const Ranked& b) {
+      if (a.size != b.size) { return a.size < b.size; }
+      if (a.dup  != b.dup)  { return a.dup  < b.dup;  }
+      return a.head < b.head;
+    });
+    // erase, not resize: shrinking via resize makes MSVC instantiate the
+    // value-initialising overload, and FFTConfig has no default constructor.
+    candidates.erase(candidates.begin() + ptrdiff_t(nTuned), candidates.end());
+    for (const Ranked& r : tail) { candidates.push_back(r.fft); }
+
     // 3. Demote transforms far larger than this exponent needs.
     //
     //    A tune.txt entry is ordered by the cost it measured AT THE EXPONENT IT
@@ -622,34 +739,113 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
   const size_t tries = std::min(candidates.size(), MAX_TRIES);
 
   const string tag = deviceTag(q);
-  const std::map<string, bool> cache = loadVerifyCache(E, tag);
+  const std::map<string, Verdict> cache = loadVerifyCache(E, tag);
+
+  // Search, instead of settling for the first candidate that works.
+  //
+  // Taking the first verified candidate trusts the candidate ORDER, and that
+  // order is weak evidence: it comes from tune.txt, whose costs were measured
+  // at whatever exponent the tune targeted, on shapes this function then
+  // filters only by size. Within the sane size band that ranking is a guess,
+  // and shapes inside it have measured tens of percent apart. An 8-digit
+  // exponent commits hours to whatever is picked, so a bounded budget spent
+  // timing the alternatives is cheap insurance. Below 8 digits the whole job
+  // can finish in under a minute, and 15 seconds of shopping would be a large
+  // fraction of it -- hence the floor, rather than doing this unconditionally.
+  //
+  // The budget covers only candidates that must actually be measured. A cost
+  // already in fft-verified.txt (same exponent, same GPU and driver) is reused
+  // for free, so a repeat run of the same exponent re-picks the same winner
+  // instantly. Delete fft-verified.txt to force a fresh search.
+  const u32 SEARCH_MIN_EXPONENT = 10000000;   // 8 digits
+  const double SEARCH_BUDGET = 15.0;          // seconds, measured candidates only
+  const bool search = forcedSpec.empty() && E >= SEARCH_MIN_EXPONENT;
+
+  if (search) {
+    // Deliberately no time promised here. The budget bounds when the search
+    // stops STARTING work, not when it finishes, and a candidate rejected for
+    // computing wrong results costs as much as one that is timed -- M51900019
+    // rejects five in a row. The line at the end reports what it really took.
+    printf("  timing candidates to pick the fastest for M%u\n", E);
+  }
+
+  // A candidate that FAILS its correctness check still burns wall time, and
+  // on this GPU they come in runs: at M51900019 the four M31^2*M31*M61 shapes
+  // at 1048576 words all fail deterministically, 36 seconds of them, which was
+  // enough to exhaust the budget one measurement after the first shape that
+  // worked. The search then "chose" from a field of one and took a transform
+  // 6.7% off the best. So the budget may only stop the search once it has
+  // actually COMPARED something -- rejections do not count towards that.
+  //
+  // Two is the number, not three. With the ordering above, the winner was in
+  // the first two timings at all 13 exponents measured from M13466917 to
+  // M99700031; the third only ever confirmed it, for another 8-12s. Most of
+  // that is building the transform, not timing it -- 3000 iterations is 2-3s
+  // of the 6-12s a candidate costs -- so candidates, not iterations, are what
+  // the budget actually buys.
+  const u32 SEARCH_MIN_TIMED = 2;
+
+  size_t best = tries;      // index into candidates; `tries` means "none yet"
+  double bestCost = 0;
+  double spent = 0;
+  u32 nTimed = 0;           // candidates with a usable cost, measured or cached
 
   for (size_t i = 0; i < tries; ++i) {
     const FFTConfig& fft = candidates[i];
     const string spec = fft.spec();
 
     // A remembered verdict, from this exponent on this GPU and driver.
-    if (auto it = cache.find(spec); it != cache.end()) {
-      if (it->second) {
-        printf("  FFT %s (verified earlier)\n", spec.c_str());
-        return fft;
-      }
+    const auto it = cache.find(spec);
+    const bool known = (it != cache.end());
+    if (known && !it->second.ok) {
       printf("  skipping %s (failed verification earlier)\n", spec.c_str());
       continue;
     }
+    if (known && (!search || it->second.cost > 0)) {
+      if (!search) {
+        printf("  FFT %s (verified earlier)\n", spec.c_str());
+        return fft;
+      }
+      printf("  %-22s %6.0f us/it (measured earlier)\n", spec.c_str(), it->second.cost);
+      ++nTimed;
+      if (best == tries || it->second.cost < bestCost) { best = i; bestCost = it->second.cost; }
+      continue;
+    }
 
-    printf("  verifying FFT %s ... ", spec.c_str());
+    // Stop starting new measurements once the budget is gone -- but never
+    // before enough candidates have actually been timed to constitute a
+    // comparison (and so never before one has worked at all, which would
+    // otherwise leave the job with no FFT).
+    if (search && nTimed >= SEARCH_MIN_TIMED && spent >= SEARCH_BUDGET) {
+      printf("  %u candidate(s) left untimed: %.0fs budget spent\n",
+             u32(tries - i), spent);
+      break;
+    }
+
+    printf("  %s FFT %s ... ", search ? "timing" : "verifying", spec.c_str());
     fflush(stdout);
     double cost = 0;
     Timer t;
-    const bool ok = verifyOne(shared, q, E, fft, &cost);
+    const bool ok = verifyOne(shared, q, E, fft, &cost, search ? SEARCH_QUICK : 10);
+    spent += t.at();
     appendVerifyCache(E, tag, spec, ok, cost);
-    if (ok) {
-      printf("OK (%.0f us/it, %.1fs)\n", cost, t.at());
-      return fft;
+    if (!ok) {
+      printf("FAILED its correctness check -- NOT USING IT\n");
+      if (i + 1 < tries) { printf("  trying the next candidate\n"); }
+      continue;
     }
-    printf("FAILED its correctness check -- NOT USING IT\n");
-    if (i + 1 < tries) { printf("  trying the next candidate\n"); }
+    printf("OK (%.0f us/it, %.1fs)\n", cost, t.at());
+    if (!search) { return fft; }
+    ++nTimed;
+    if (best == tries || cost < bestCost) { best = i; bestCost = cost; }
+  }
+
+  // Only reachable in search mode: every other path returns on the first
+  // usable candidate it sees.
+  if (best != tries) {
+    printf("  fastest is %s at %.0f us/it (%.1fs spent choosing)\n",
+           candidates[best].spec().c_str(), bestCost, spent);
+    return candidates[best];
   }
 
   log("\n  No FFT config passed verification for M%u.\n"

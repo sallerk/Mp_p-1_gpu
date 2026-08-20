@@ -1071,8 +1071,25 @@ void Tune::tune() {
     // rejects as unknown keys. Appending here would silently break the job
     // config, so the tuning suggestions go to their own file.
     File config = File::openAppend("Mp_p-1_gpu-tune-config.txt");
+
+    // Record WHAT these options were tuned for.
+    //
+    // Without it the file is a bare list of -use settings, and the loader had
+    // no choice but to apply them to every job it ever ran, however far that
+    // exponent was from the one tuned. They are not neutral when misapplied:
+    // replaying one such file against a transform it was not measured on cost
+    // about 32% per squaring. The file is also opened for APPEND, so tuning
+    // twice leaves two blocks in it with no way to tell which is which.
+    //
+    // main.cpp applies a block only when this range covers the exponent about
+    // to run, and otherwise leaves the stock defaults alone -- so this one line
+    // is what makes an accumulated tune-config safe to keep around.
+    const string tunedFor = "\n# tuned-for exponents " + to_string(min_exponent)
+                          + "-" + to_string(max_exponent);
+
     if (newConfigKeyVals.size()) {
       config.write("\n# New settings based on a -tune run.");
+      config.write(tunedFor);
       for (u32 i = 0; i < newConfigKeyVals.size(); ++i) {
         config.write(i == 0 ? "\n   -use " : ",");
         config.printf("%s=%u", newConfigKeyVals[i].first.c_str(), newConfigKeyVals[i].second);
@@ -1082,6 +1099,9 @@ void Tune::tune() {
     if (suggestedConfigKeyVals.size()) {
       config.write("\n# These settings were slightly faster in a -tune run.");
       config.write("\n# It is suggested that each setting be timed over a longer duration to see if the setting really is faster.");
+      // Tagged even though the -use line below is commented out: uncommenting
+      // it is the whole point of writing it, and an untagged line is ignored.
+      config.write(tunedFor);
       for (u32 i = 0; i < suggestedConfigKeyVals.size(); ++i) {
         config.write(i == 0 ? "\n#  -use " : ",");
         config.printf("%s=%u", suggestedConfigKeyVals[i].first.c_str(), suggestedConfigKeyVals[i].second);

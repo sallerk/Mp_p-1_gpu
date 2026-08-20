@@ -92,11 +92,28 @@ bias = 2.0
 #  runs. That verification is not paranoia: a tune on this GPU once produced a
 #  tune.txt in which every entry computed WRONG results.
 #
+#  For an exponent of 8 digits or more, auto does not stop at the first
+#  candidate that verifies: it times candidates and takes the fastest, usually
+#  spending 15-25 seconds. Against hours of stage 1 that is noise, and shapes
+#  that all verify have measured 4.9x apart at one exponent. Untuned candidates
+#  are tried smallest-transform-first, and within a size, cheapest arithmetic
+#  that still has the precision for this exponent. Timings land in
+#  fft-verified.txt, so a repeat run of the same exponent re-picks the same
+#  winner for free -- delete that file to search again. Below 8 digits the
+#  search is skipped, because a job that short cannot afford it.
+#
 #  Recommended workflow for a new exponent:
-#     1. set `exponent` below
-#     2. Mp_p-1_gpu.exe --tune noconfig      (once; targets that exponent and
-#                                               prints a verified recommendation)
+#     1. put the exponent in worktodo.txt
+#     2. Mp_p-1_gpu.exe --tune noconfig      (optional; targets that exponent
+#                                               and prints a verified
+#                                               recommendation)
 #     3. Mp_p-1_gpu.exe                      (auto picks the best verified one)
+#
+#  Step 2 is per exponent, not once per GPU. Besides tune.txt it writes
+#  Mp_p-1_gpu-tune-config.txt, whose kernel options are specific to the
+#  transform they were measured on -- each block records the exponent range it
+#  was tuned for, and a run ignores any block that does not cover its own
+#  exponent. See MANUAL.md, "Tuning".
 #
 #  Set an explicit spec (e.g. 1:512:8:256:202) only to override that choice.
 #  An explicit spec skips candidate selection but is still verified, unless

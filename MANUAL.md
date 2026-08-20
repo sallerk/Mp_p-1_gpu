@@ -80,11 +80,14 @@ b1 = auto
 b2 = auto
 ```
 
-Then, once per GPU:
+Then, once for this exponent:
 
 ```
 Mp_p-1_gpu.exe --tune noconfig
 ```
+
+(Optional — a run without it picks and verifies its own transform. See
+[Tuning](#tuning) for why it is per exponent and not per GPU.)
 
 and to run the job:
 
@@ -145,13 +148,99 @@ to know which exponent to scope themselves to, the same role `config.txt`'s
 | *(no arguments)* | run the job in `config.txt` |
 | `--config <file>` | use a different job file |
 | `--bounds` | show the B1/B2 trade-off for your exponent |
-| `--tune[=opts]` | measure FFT configurations for your GPU |
+| `--tune[=opts]` | measure FFT shapes and kernel options for your GPU, targeting the worktodo exponent (see [Tuning](#tuning)) |
 | `--bench` | time every FFT that can hold an exponent |
 | `--list-devices` | list OpenCL GPUs |
 | `--selftest[=which]` | run self-checks |
 | `-d <n>` | use GPU *n* |
 | `-fft <spec>` | force an FFT configuration |
 | `-h` | full help |
+
+## Tuning
+
+`--tune` writes two files, and they are not the same kind of thing.
+
+**`tune.txt`** — the cost of each FFT *shape* it managed to time. A run reads
+it as a ranking of candidates, verifies them at your exponent, and can fall
+through to untuned shapes if every tuned entry fails or is the wrong size. It
+is advisory, and a stale one costs you a slower transform at worst.
+
+**`Mp_p-1_gpu-tune-config.txt`** — the winners of the `-use` *kernel option*
+search: `MODM31`, `TABMUL_CHAIN61`, `IN_WG`, and about a dozen more. These are
+not advisory. They change how the kernels are compiled, and they are specific
+to the transform they were measured on: one such file replayed against a
+transform it was not measured for cost about 32% per squaring, worse than no
+tuning at all.
+
+So each block in it is tagged with the exponent range the tune targeted:
+
+```
+# New settings based on a -tune run.
+# tuned-for exponents 82589933-82589933
+   -use IN_WG=64,IN_SIZEX=8,OUT_WG=256,...
+```
+
+A run applies a block only when its range covers the exponent being worked, and
+otherwise uses the stock defaults and says so. A bare `--tune` targets the first
+exponent in `worktodo.txt`, so that range is normally one exponent — which is
+why the recommended workflow tunes per exponent, not once per GPU. Pass
+`minexp=`/`maxexp=` to tune for a range on purpose.
+
+The file is *appended* to, so tuning several exponents accumulates blocks in it
+and each is used for its own. Blocks written by a version before this existed
+carry no range; they are ignored and reported, because there is no way to know
+what they were measured on. Re-run `--tune` to replace them.
+
+A queue is handled per entry: the options are re-decided for each exponent in
+`worktodo.txt` as it comes up, not once when the program starts.
+
+`--tune` itself, and `--selftest`, always measure from the stock defaults — a
+tune has to be reproducible, and a selftest should test the engine rather than
+one tuning. `--bench` does apply a tuning matching its exponent, since the
+number it reports is meant to be the number a real run of that exponent gets.
+
+**Known limitation.** The option search still measures against a hard-coded
+shape (`512:15:512` FP64, or `512:8:512` for the NTT) at that shape's own top
+exponent, rather than against the shape your exponent will actually use. The
+recorded range is therefore what the tune was *aimed* at, not where its numbers
+came from. Gating on it keeps the options off unrelated exponents; making them
+correct for the exponent they claim is still to do.
+
+### Picking the transform
+
+With `fft = auto` (the default), a run ranks candidates from `tune.txt`, drops
+any that cannot hold the exponent or that are more than twice the smallest
+usable size, and verifies them in order against a correctness check.
+
+For an exponent of **8 digits or more** it does not stop at the first one that
+passes: it times candidates and takes the fastest, typically spending 15–25
+seconds. Shapes that all pass the correctness check have measured 4.9x apart at
+one exponent, so against hours of stage 1 the search is noise. It never stops
+before two candidates have actually been compared, so neither a slow first
+candidate nor a run of rejected ones can leave a job on an unexamined
+transform.
+
+Untuned candidates are ordered by **precision headroom**: smallest transform
+first, and within one size, the cheapest arithmetic whose bits-per-word ceiling
+still clears the exponent. Every family here buys precision with speed, so the
+tightest fit is the one to try first, and one variant of every shape is tried
+before any shape gets a second (the `:101` and `:202` of a shape measure within
+0.2% of each other). Entries from `tune.txt` keep their measured order and are
+tried ahead of all of it.
+
+Below 8 digits the search is skipped: a job that short cannot afford it.
+
+A caveat on precision: GPU clocks vary about 10% run to run, so the search
+cannot reliably separate two shapes closer than roughly 5%. It is built to
+avoid the large mistake, not to split hairs — before this ordering existed it
+could settle on a transform 81% slower than one it had already timed.
+
+Verdicts *and timings* are remembered in `fft-verified.txt`, keyed by exponent,
+GPU and driver, so a repeat run of the same exponent re-picks the same winner
+instantly. Delete that file to search again. Each line records the measurement
+scale it was taken at; costs from a different scale are not comparable, so an
+entry from an older build keeps its verdict but is re-timed. `-fft <spec>` skips selection
+entirely (the spec is still verified unless `verify_fft = 0`).
 
 ## Reading the output
 

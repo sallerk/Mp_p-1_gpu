@@ -80,6 +80,160 @@ Verified both directions: M5378909 with a tune.txt from a larger exponent now
 picks 262144 words instead of 1048576, and M82589933 with its own tune.txt
 still picks the tuned 1:512:8:256:202 exactly as before.
 
+**An 8-digit exponent now spends 15-25 seconds picking its transform, instead
+of taking the first one that works.** Candidate order came from
+tune.txt, whose costs were measured at whatever exponent the tune targeted; the
+oversizing fix above bounds how wrong that order can be, but inside the
+remaining 2x band it is still a guess -- and the table below shows a 4.9x
+spread inside that band. Selection took the first candidate that passed its
+correctness check and stopped looking.
+
+It now times candidates and keeps the fastest. The budget gates *starting* a
+measurement, not finishing one, and a candidate cannot be cut short, so a run
+overshoots rather than stopping dead -- see the ordering entry below for what
+that settles at and why rejected transforms can push it further. Against hours
+of stage 1 it is noise either way. It is skipped below 8 digits: a 7-digit job
+can finish inside a minute, where that much shopping would be a visible tax.
+
+How wide the field actually is, measured on M13466917 with no tune.txt at all,
+every candidate 524288 or 1048576 words and so all inside the size band the
+oversizing fix allows:
+
+| shape | us/it |
+|---|--:|
+| 2:256:4:256:101 | 222 |
+| 4:256:4:256:101 | 244 |
+| 1:256:4:256:101 | 333 |
+| 256:6:256:101 | 668 |
+| 256:7:256:101 | 716 |
+| 512:3:256:101 | 740 |
+| 256:3:512:101 | 831 |
+| 1K:2:256:101 | 1094 |
+
+Every one of these passes its correctness check, so under the old rule the
+first in candidate order won outright -- a 4.9x spread decided by an ordering
+that never measured this exponent.
+
+**The candidate ORDER now comes from the bpw table, and the timing is long
+enough to trust.** The search above only helps if the candidates worth timing
+are the ones it reaches, and if the numbers it takes are real. Neither held.
+
+Candidates arrived in `FFTShape::allShapes()` catalog order, which has nothing
+to do with speed, and only the first eight are ever timed. Measured cold on an
+RTX 3070 with no tune.txt, that cost real time two different ways:
+
+- The fast shape sat too late to reach. M55000013 chose 687 us/it on its first
+  run, 650 on the second, 630 on the third, converging only as the verdict
+  cache filled in. Four of twelve exponents behaved this way, all between 52M
+  and 83M.
+- Worse, M20000003 settled on `4:256:4:256` having already timed
+  `1:256:4:256` and ranked it slower. Measured over 8000 iterations the two are
+  306 and 169 us/it. It converged on a shape **81% slower** than one in its own
+  candidate list, and no amount of re-running fixed it.
+
+The order now ranks on precision headroom, `maxBpw - E/size`, smallest first,
+after sorting by transform size. Every family trades speed for bits per word,
+so the cheapest arithmetic that still clears the exponent is the one to try
+first: here M31^2*M61 (~32 bpw) beats M31*M61 (~40) beats M31^2*M31*M61 (~48),
+and plain FP64 is 4.3x off the pace at M65000011 because consumer nVidia runs
+FP64 at 1/64 rate. Headroom expresses that without naming any of it, which is
+the point -- given a card with fast FP64 the same rule reaches for FP64 exactly
+where it fits. Size has to lead, or a tighter-fitting shape one size up
+outranks the right answer: at M20000003 that is the M61 shape at 1048576 words
+(216 us/it) jumping the 524288-word M31*M61 (169).
+
+Shapes also appear once per usable variant, and for every NTT family the bpw
+table is variant-independent, so `:101` and `:202` of one shape tie on both
+keys and land adjacent. They also run at the same speed -- 641.4 vs 641.8,
+887.4 vs 886.7, 937.2 vs 936.0 us/it, inside 0.2% each time -- so every shape
+now gets one variant tried before any shape gets a second.
+
+The measurement was the other half. `verifyOne` timed 400 iterations, about
+0.3s of GPU work, which is not a measurement of the transform so much as of
+where the clocks happened to be. At M65000011 it put `2:512:8:256:101` at 891
+us/it and `2:256:16:256:101` at 667, where careful runs give 609 and 621 --
+wrong by 46%, and in the wrong order, which is the part that costs time. It now
+runs 3000 iterations. That is affordable only because the ordering fixed what
+gets timed: the budget buys accuracy on a couple of good candidates instead of
+noise on many. Most of a candidate's 6-12s is building the transform, not
+timing it, so candidates rather than iterations are what the budget really
+buys, and two comparisons proved sufficient at every exponent tested.
+
+Rejections no longer starve the comparison, either. A candidate that fails its
+correctness check costs as much wall time as one that is timed, and they come
+in runs -- M51900019 rejects five straight, 36 seconds of them, which used to
+exhaust the budget one measurement after the first shape that worked, leaving
+the search to "choose" from a field of one. The budget may now only stop the
+search once two candidates have actually been compared.
+
+Cold-start first-run pick, against exhaustive interleaved head-to-heads of
+every safe shape at each exponent:
+
+| | before | after |
+|---|--:|--:|
+| exactly optimal | 8 of 13 | **11 of 13** |
+| within 2% | 8 of 13 | **13 of 13** |
+| worst case | +81% | **+2.0%** |
+
+The residue is a limit worth knowing: run-to-run GPU clock variation is around
+10%, so a 3000-iteration measurement cannot reliably separate shapes closer
+than about 5%. At M65000011 the top two are 2% apart and it takes either. What
+the search now reliably avoids is the large mistake, which is what mattered.
+
+Selection costs 15-24s at every exponent tested but M51900019, where four
+rejected transforms push it to 50s -- the case where spending the time is most
+clearly right.
+
+**`fft-verified.txt` gained a field.** Each line now ends with the measurement
+scale (`q5`). Costs taken over different iteration counts are not comparable,
+and mixing them is the exact mistake the change above exists to stop, so an
+entry written by an older build is kept for its verdict and its cost dropped.
+Those exponents re-time once.
+
+The budget covers only candidates that must actually be measured. `fft-verified.txt`
+already recorded a cost next to each verdict; those are now read back, so a
+repeat run of the same exponent on the same GPU and driver re-picks the same
+winner instantly. Delete the file to force a fresh search. A cost is read as
+optional -- a missing or zero one means "unknown" and is re-measured rather
+than treated as free, which would otherwise win every comparison.
+
+**`--tune`'s kernel options now record the exponent they were measured for, and
+are ignored for any other.** `Mp_p-1_gpu-tune-config.txt` holds the winners of
+the tune's `-use` option search -- `MODM31`, `TABMUL_CHAIN61`, `IN_WG` and
+about a dozen more. The loader applied every line in it to every job it ever
+ran. It had no alternative: the file recorded no exponent, no shape and no
+transform size, so there was nothing to check a job against even in principle.
+
+These settings are not neutral when misapplied. A 15-option file replayed
+against a transform it was not measured on cost about 32% per squaring -- worse
+than running with no tuning at all. The file is also opened for *append*, so
+tuning twice leaves two blocks in it and the later keys win by parse order,
+which has nothing to do with which one fits.
+
+`--tune` now writes a `# tuned-for exponents <lo>-<hi>` line above each block,
+and only a block whose range covers the exponent about to run is applied;
+anything else leaves the stock defaults in place, and says so. A bare `--tune`
+targets the worktodo exponent, so that range is normally a single exponent.
+Blocks written before this -- carrying no range -- are ignored and reported,
+rather than being trusted by default.
+
+The decision also moved to where the exponent is known. Options used to be read
+once at startup, before the worktodo loop, so every entry in a queue ran under
+one option set no matter how far apart the exponents were -- a queue holding a
+5-million and an 80-million exponent got the same kernels for both. They are now
+re-decided per entry. `--tune`, `--selftest` and `--bench` are
+unaffected in the sense that matters: a tune still measures from the stock
+baseline, a selftest now tests the engine rather than one tuning, and `--bench`
+-- which does have exactly one exponent -- applies a tuning measured for it.
+
+Not fixed here, and worth knowing before trusting a tune-config at all: the
+option search itself still measures against a hard-coded shape (`512:15:512`
+FP64, or `512:8:512` for the NTT) at that shape's own top exponent, not against
+the shape the target exponent will actually use. So the range now recorded is
+the range the tune was *aimed* at, not the transform its numbers came from.
+Gating on it stops the options leaking onto unrelated exponents; making them
+right for the exponent they claim is a separate change.
+
 **Not done: a "V-trace"/Pair95 stage 2.**
 [PrMers](https://github.com/cherubrock-seb/PrMers) runs its P-1 stage 2 on the
 Lucas trace `V_n = H^n + H^-n`, where `V_(kD) - V_j` covers `kD-j` and `kD+j`

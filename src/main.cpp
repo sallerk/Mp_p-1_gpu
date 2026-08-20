@@ -26,6 +26,7 @@
 #include "Config.h"
 #include "Context.h"
 #include "FFTConfig.h"
+#include "File.h"
 #include "Gcd.h"
 #include "Gpu.h"
 #include "GpuCommon.h"
@@ -52,6 +53,7 @@
 #include <cstdio>
 #include <ctime>
 #include <exception>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -362,6 +364,100 @@ bool launchedByDoubleClick() {
 
 } // namespace
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Tuned kernel options, applied only to the exponent they were measured for.
+//
+// --tune measures things like MODM31 and TABMUL_CHAIN61 and writes the winners
+// to Mp_p-1_gpu-tune-config.txt as "-use KEY=VAL" lines. Upstream nothing ever
+// read that file back, so the settings were computed and then discarded.
+//
+// Reading it is not enough on its own. Those measurements belong to the
+// transform they were taken on, and the file used to record nothing about
+// which that was -- no exponent, no shape, no size -- so there was nothing a
+// loader could have checked even if it had wanted to. Applied to a different
+// exponent they are not neutral: replaying one such file against a transform it
+// was not measured on cost about 32% per squaring.
+//
+// So --tune now tags each block with the exponent range it targeted, and only a
+// block covering the exponent about to run is applied; anything else leaves the
+// stock defaults in place. That decision belongs per worktodo entry, not once
+// at startup -- a queue holding a 5-million and an 80-million exponent must not
+// run the second under the first one's tuning -- which is why this is a
+// function called from runOneJob() rather than a one-off read in runMain().
+//
+// The pre-rename file name is still honoured: it holds measured settings that
+// took 30-90 minutes to produce.
+// ---------------------------------------------------------------------------
+
+// args.flags as they were before any tune-config was layered on. Restored at
+// the start of every call, so one entry's tuning cannot leak into the next.
+std::map<std::string, std::string> gStockFlags;
+
+fs::path tuneConfigPath() {
+  for (const char* name : {"Mp_p-1_gpu-tune-config.txt", "gpuowl-tune-config.txt"}) {
+    if (fs::exists(name)) { return name; }
+  }
+  return {};
+}
+
+void applyTunedOptions(Args& args, u32 E) {
+  args.flags = gStockFlags;
+
+  const fs::path path = tuneConfigPath();
+  if (path.empty()) { return; }
+  File file = File::openRead(path);
+  if (!file) { return; }
+  const std::string name = path.string();
+
+  u64 lo = 0, hi = 0;                  // range governing the next -use line
+  u32 applied = 0, wrongExp = 0, untagged = 0;
+
+  for (std::string line : file) {
+    line = rstripNewline(line);
+
+    unsigned long long a = 0, b = 0;
+    if (sscanf(line.c_str(), " # tuned-for exponents %llu-%llu", &a, &b) == 2) {
+      lo = a; hi = b;
+      continue;
+    }
+
+    const size_t at = line.find_first_not_of(" \t");
+    if (at == std::string::npos || line[at] == '#') { continue; }
+
+    if (line.compare(at, 5, "-use ") == 0) {
+      // One tag governs exactly one -use line. Letting a tag carry over would
+      // silently lend its range to an untagged line further down the file --
+      // the very thing this is here to stop.
+      if (!hi)                   { ++untagged; }
+      else if (E < lo || E > hi) { ++wrongExp; }
+      else                       { args.parse(line); ++applied; }
+      lo = hi = 0;
+      continue;
+    }
+
+    args.parse(line);            // -log, -workers, ...: not transform-specific
+  }
+
+  if (applied) {
+    printf("  tuned kernel options: %u block(s) in %s cover M%u\n",
+           applied, name.c_str(), E);
+  }
+  if (wrongExp) {
+    printf("  tuned kernel options: %u block(s) in %s were measured for other\n"
+           "    exponents -- using stock defaults for M%u\n",
+           wrongExp, name.c_str(), E);
+  }
+  if (untagged) {
+    printf("  tuned kernel options: %u block(s) in %s carry no exponent and were\n"
+           "    ignored -- re-run --tune to make them usable\n",
+           untagged, name.c_str());
+  }
+}
+
+} // namespace
+
 // Runs one exponent's full job -- FFT/bounds selection through P+1/P-1
 // stage 1 and (if warranted) stage 2 -- and returns 0 (done, whether or not
 // a factor turned up), 1 (interrupted; nothing more to do until relaunched),
@@ -371,6 +467,10 @@ bool launchedByDoubleClick() {
 // must already be set for the entry being run.
 static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
                      const std::string& fftSpec, int deviceOverride) {
+  // Kernel options first: they change how the transform is compiled, so they
+  // have to be settled before the FFT below is timed, let alone run.
+  applyTunedOptions(*shared.args, cfg.exponent);
+
   // Phase 3 (the gcd) is CPU-only; this is the knob that speeds it up.
   setGcdThreads(cfg.gcdThreads);
   printf("  gcd worker threads: %s\n",
@@ -882,33 +982,18 @@ static int runMain(int argc, char** argv) {
     // 2M-word transform is far too large) or into --tune.
     args.fftSpec = fftSpec;
 
+    // The baseline every job starts from. applyTunedOptions() restores it
+    // before layering on whatever the tune-config has for that job's exponent,
+    // so the tune-config is never read here: there is no single exponent at
+    // this point to read it FOR. --tune, --selftest and --bench therefore all
+    // measure from the stock defaults, which is what makes a tune reproducible
+    // and a selftest a test of the engine rather than of one tuning.
+    gStockFlags = args.flags;
+
     // gpuowl's Tune defaults time_FFTs and time_NTTs BOTH to 0, so a bare
     // "--tune" skips every shape and writes no tune.txt at all -- it looks like
     // a silent failure. Neither selector is a sensible default for a user who
     // just asked to tune, so select both unless one was named explicitly.
-    // Apply the kernel options a previous --tune discovered.
-    //
-    // The tune's option search measures things like MODM31 and TABMUL_CHAIN61
-    // and writes the winners as "-use KEY=VAL" lines. Args::readConfig() parses
-    // exactly that format -- but upstream nothing ever calls it here, so those
-    // settings were being computed and then discarded. Skipped during --tune
-    // itself, so a tune always measures from the stock baseline and stays
-    // reproducible.
-    // The old name is still read if present: the file holds measured kernel
-    // settings that took 30-90 minutes to produce, and silently ignoring one
-    // left over from before the rename would quietly lose that tuning.
-    if (!doTune) {
-      const char* tuneCfg = fs::exists("Mp_p-1_gpu-tune-config.txt") ? "Mp_p-1_gpu-tune-config.txt"
-                          : fs::exists("gpuowl-tune-config.txt")    ? "gpuowl-tune-config.txt"
-                          : nullptr;
-      if (tuneCfg) {
-        args.readConfig(tuneCfg);
-        if (!args.flags.empty()) {
-          printf("Applied %u tuned kernel option(s) from %s\n", u32(args.flags.size()), tuneCfg);
-        }
-      }
-    }
-
     args.tune = tuneOpts;
     if (doTune) {
       if (tuneOpts.find("fp64") == std::string::npos
@@ -951,6 +1036,10 @@ static int runMain(int argc, char** argv) {
     }
 
     if (doBench) {
+      // Unlike a selftest, a benchmark IS one exponent, so tuning measured for
+      // it is exactly what should be in force -- otherwise the number reported
+      // here would not be the number a real run of it gets.
+      applyTunedOptions(args, benchE);
       extern void benchmarkFFT(GpuCommon, Queue*, u32, u32, double, const std::string&);
       benchmarkFFT(shared, &queue, benchE, benchIters, sizeSlack, args.fftSpec);
       return 0;
