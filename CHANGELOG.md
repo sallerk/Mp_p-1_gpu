@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7 (in development)
+## 1.7
 
 **Stage 2's `T_j` table is built by a recurrence instead of an exponentiation
 per entry.** The table holds `x^(j^2)` for every `j` in the plan -- the values
