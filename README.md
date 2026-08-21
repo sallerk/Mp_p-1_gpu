@@ -42,12 +42,12 @@ chooses its own transform, because on this side that choice is most of what
 changed in 1.7. Two runs each; the best of the two is shown, and the pair
 agreed to within 10%:
 
-| tool | version | stage 1 | stage 2 | final gcd | **total** | relative |
-|---|---|--:|--:|--:|--:|--:|
-| **Mp_p-1_gpu** | 1.7 | 1m33s | 2m07s | 3m03s | **7m07s** | **1.00x** |
-| Mp_p-1_gpu | 1.6 | 2m02s | 2m47s | 2m56s | 7m55s | 1.11x slower |
-| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 3m30s | 5m20s | *(included)* | 9m56s | 1.40x slower |
-| [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | *(no P-1 support)* | n/a |
+| tool | version | setup | stage 1 | stage 2 | final gcd | **total** | relative |
+|---|---|--:|--:|--:|--:|--:|--:|
+| **Mp_p-1_gpu** | 1.7 | 24s | 1m33s | 2m07s | 3m03s | **7m07s** | **1.00x** |
+| Mp_p-1_gpu | 1.6 | 10s | 2m02s | 2m47s | 2m56s | 7m55s | 1.11x slower |
+| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 1m06s | 3m30s | 5m20s | *(in stage 2)* | 9m56s | 1.40x slower |
+| [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | — | *(no P-1 support)* | n/a |
 
 **1.6 against 1.7 is almost entirely which transform gets picked.** 1.6 takes
 the first candidate that passes its correctness check, in catalog order, and
@@ -57,11 +57,25 @@ That one decision is worth ~25% on both GPU stages. Both versions produced the
 identical stage-2 accumulator (`acc res64 5f12b67e85c663c3`), which is the
 check that matters when the transform underneath changes.
 
-**Reading the three columns.** The final gcd needs the stage-2 accumulator, so
-stage 1, stage 2 and the final gcd run in series and add up: 1m33 + 2m07 +
-3m03 = 6m43s, plus the ~22s 1.7 spends choosing the transform, against 7m07s
-observed. There is a *second* gcd — stage 1's — which since 1.6 runs alongside
-stage 2.
+**Reading the columns.** Every row adds across to its own total, which is why
+`setup` is a column: without it the rows look like they are missing a minute.
+The final gcd needs the stage-2 accumulator, so stage 1, stage 2 and the final
+gcd run in series — 24 + 1m33 + 2m07 + 3m03 = 7m07s for 1.7, matching the wall
+clock.
+
+What `setup` holds differs by tool. For 1.7 it is almost entirely **choosing
+the transform**: 21.9s timing candidates (23.2s in the other run), plus device
+init and process start. For 1.6 it is the 8.0s spent verifying its single
+candidate. For PrMers it is startup and kernel build plus its stage-1 gcd,
+which runs *after* the stage-1 timer stops and before stage 2 begins; its
+stage-2 gcd, by contrast, falls inside the stage-2 figure, hence *(in stage
+2)*. So the two tools' gcd work is not in comparable columns and only the
+totals compare cleanly.
+
+There is also a *second* gcd on this side — stage 1's — which since 1.6 runs
+alongside stage 2. The program prints its duration (3m18s in the 1.7 run) but
+it is not a column and does not add: it overlaps stage 2 and the final gcd,
+both of which outlast it.
 
 **That second gcd is no longer free, and 1.7 is why.** In 1.6 it takes about as
 long as stage 2 (2m57s against 2m47s), so the two end together and the final
