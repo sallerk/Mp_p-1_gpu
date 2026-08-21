@@ -25,8 +25,11 @@ OpenCL SDK.
 >
 > That reaches the end of a run: the final gcd needs the stage-2 accumulator,
 > so stage 1, stage 2 and the final gcd run in series, and a second saved in
-> stage 2 is a second saved overall. The stage-1 gcd runs alongside stage 2
-> and is what the overlap makes free -- not stage 2 itself.
+> stage 2 is a second saved overall. The stage-1 gcd runs alongside stage 2 --
+> that is what the overlap covers, not stage 2 itself. As of 1.7 it no longer
+> covers all of it: stage 2 is now short enough that the stage-1 gcd outlasts
+> it and overlaps the final gcd, and the two compete for the same worker
+> threads. See CHANGELOG.md.
 >
 > Carried over from 1.6, which fixed a real correctness bug in
 > checkpoint/resume: if you have ever resumed a stage-1 run under 1.5 or

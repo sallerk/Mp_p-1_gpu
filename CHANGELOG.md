@@ -41,12 +41,17 @@ stage 1, stage 2 and the final gcd in series. A full 1.7 run of M82589933 at
 B2 = 2,000,000:
 
 ```
+setup       24s   |  timing FFT candidates (21.9s), init, launch
 stage 1   1m33s   |
 stage 2   2m07s   |  stage-1 gcd (3m18s) runs here, and now OUTLASTS
 final gcd 3m03s   |  stage 2 -- see below
-                     1m33 + 2m07 + 3m03 = 6m43s, +22s choosing the
-                     transform, observed 7m07s
+                     24s + 1m33 + 2m07 + 3m03 = 7m07s, as observed
 ```
+
+`setup` is listed because otherwise the phases do not sum to the run: 1.7
+spends ~22s timing FFT candidates before it starts, against ~8s in 1.6, which
+verifies only the first candidate that works. The stage-1 gcd's 3m18s is *not*
+a term -- it overlaps stage 2 and the final gcd, which together outlast it.
 
 So stage 2 is on the critical path and a second saved there is a second saved
 overall.
