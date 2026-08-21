@@ -41,16 +41,25 @@ stage 1, stage 2 and the final gcd in series. A full 1.7 run of M82589933 at
 B2 = 2,000,000:
 
 ```
-stage 1   1m34s   |
-stage 2   2m11s   |  stage-1 gcd (3m13s) runs here, ending well
-final gcd 3m05s   |  before the final gcd does -- fully hidden
-                     1m34 + 2m11 + 3m05 = 6m50s, observed 6m51s
+stage 1   1m33s   |
+stage 2   2m07s   |  stage-1 gcd (3m18s) runs here, and now OUTLASTS
+final gcd 3m03s   |  stage 2 -- see below
+                     1m33 + 2m07 + 3m03 = 6m43s, +22s choosing the
+                     transform, observed 7m07s
 ```
 
 So stage 2 is on the critical path and a second saved there is a second saved
-overall. What the overlap buys is the *stage-1* gcd, which costs nothing. The
-only way stage 2 stops mattering is if the stage-1 gcd outlasts stage 2 plus
-the final gcd (193s against 316s here) -- not close, at these bounds.
+overall.
+
+What the overlap buys is the *stage-1* gcd -- but by the end of 1.7 it no
+longer buys all of it. Under 1.6 that gcd and stage 2 take about the same time
+(2m57s against 2m47s) and end together, leaving the final gcd the CPU to
+itself. 1.7's stage 2 finishes a minute earlier while the stage-1 gcd still
+needs ~3m, so the final gcd now overlaps it by around 70s and the two contend
+for the same worker threads. That is why 1.7's final gcd measures *slower*
+than 1.6's on identical gcd code. Making stage 2 faster moved the bottleneck,
+which is worth knowing before optimising it further: the next second saved in
+stage 2 is no longer a full second saved overall.
 
 Verified by a new differential check in `--selftest=stage2`: build the table
 both ways and compare every entry on the GPU. Direct exponentiation is what

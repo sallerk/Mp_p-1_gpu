@@ -36,28 +36,46 @@ every version at once.
 A full P-1 run — stage 1 to B1, then stage 2 to B2 — on the same GPU (NVIDIA
 RTX 3070), `M82589933` (8 digits, current GIMPS wavefront territory), and the
 same bounds (B1=100,000, B2=2,000,000) for every tool. Every row was measured
-back to back in one sitting under one FFT tuning, from no checkpoint, so they
-are comparable to each other:
+in one sitting, from no checkpoint, and **with no tuning of any kind** — no
+`tune.txt`, no tuned kernel options, no remembered FFT verdicts. Each tool
+chooses its own transform, because on this side that choice is most of what
+changed in 1.7. Two runs each; the best of the two is shown, and the pair
+agreed to within 10%:
 
 | tool | version | stage 1 | stage 2 | final gcd | **total** | relative |
 |---|---|--:|--:|--:|--:|--:|
-| **Mp_p-1_gpu** | 1.7 | 1m34s | 2m11s | 3m05s | **6m51s** | **1.00x** |
-| Mp_p-1_gpu | 1.6 | 1m36s | 2m18s | 3m13s | 7m07s | 1.04x slower |
-| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 3m14s | 4m56s | *(included)* | 8m10s | 1.19x slower |
+| **Mp_p-1_gpu** | 1.7 | 1m33s | 2m07s | 3m03s | **7m07s** | **1.00x** |
+| Mp_p-1_gpu | 1.6 | 2m02s | 2m47s | 2m56s | 7m55s | 1.11x slower |
+| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 3m30s | 5m20s | *(included)* | 9m56s | 1.40x slower |
 | [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | *(no P-1 support)* | n/a |
 
-**Reading the three columns.** The final gcd needs the stage-2 accumulator, so
-stage 1, stage 2 and the final gcd run in series and simply add up: 1m34 +
-2m11 + 3m05 = 6m50s against 6m51s observed for 1.7. There is a *second* gcd —
-stage 1's — which since 1.6 runs alongside stage 2; it took 3m13s here and
-finished well before the final gcd did, so it costs nothing and is not a
-column. That overlap is what 1.6 bought. It also means a second saved in
-stage 2 is a second saved overall, which is where 1.7's stage-2 work shows up.
+**1.6 against 1.7 is almost entirely which transform gets picked.** 1.6 takes
+the first candidate that passes its correctness check, in catalog order, and
+lands on `4:256:16:256:101`. 1.7 times candidates and keeps the fastest, which
+here is `1:512:8:256:101` — measured 675 against 887 us/it in the same run.
+That one decision is worth ~25% on both GPU stages. Both versions produced the
+identical stage-2 accumulator (`acc res64 5f12b67e85c663c3`), which is the
+check that matters when the transform underneath changes.
 
-Mp_p-1_gpu is ahead on both GPU stages — about 2.1x on stage 1 and 2.3x on
-stage 2 — but gives most of it back in the `gcd CPU` phase, which PrMers runs
+**Reading the three columns.** The final gcd needs the stage-2 accumulator, so
+stage 1, stage 2 and the final gcd run in series and add up: 1m33 + 2m07 +
+3m03 = 6m43s, plus the ~22s 1.7 spends choosing the transform, against 7m07s
+observed. There is a *second* gcd — stage 1's — which since 1.6 runs alongside
+stage 2.
+
+**That second gcd is no longer free, and 1.7 is why.** In 1.6 it takes about as
+long as stage 2 (2m57s against 2m47s), so the two end together and the final
+gcd has the CPU to itself. 1.7's stage 2 finishes a minute earlier while the
+stage-1 gcd still needs ~3m, so the final gcd now starts while the stage-1 gcd
+is still running and the two compete for the same worker threads — which is
+why 1.7's final gcd reads *slower* than 1.6's despite identical gcd code. Some
+of what 1.7 wins on the GPU is handed back here. It still nets out ahead by
+about 9%.
+
+Mp_p-1_gpu is well ahead on both GPU stages — 2.3x on stage 1 and 2.5x on
+stage 2 — but gives much of it back in the `gcd CPU` phase, which PrMers runs
 through GMP and this runs through its own big-integer code. The final gcd is
-the single largest line in the table at 3m05s, longer than either GPU stage.
+the single largest line in the table at 3m03s, longer than either GPU stage.
 **The gcd, not the pairing, is where the remaining headroom is.**
 
 **gpuowl has no P-1 factoring in this build.** Its `-B1`/`-B2` flags are
@@ -81,10 +99,17 @@ write-up in [MANUAL.md](MANUAL.md).
 
 Take this as one data point, not a definitive verdict — a different exponent,
 GPU, bounds, or either tool's own tuning could shift these numbers. The
-exponent matters more than it looks: at `M5378909`, a quarter of this size,
-the ranking **reverses** and PrMers is about 2.2x faster (25s against 54s,
-both at stock settings). This engine descends from gpuowl and is at its best
-on wavefront-sized transforms; at 262144 words it does not fill the GPU.
+exponent still matters more than it looks: at `M5378909`, a quarter of this
+size and at the same bounds, PrMers is **still ahead**, 31s against 42s. But
+that gap used to be 2.2x and is now 1.35x, and the reason is the same FFT
+change — 1.7 picks `3:256:2:256:101` at 62 us/it where 1.6 took
+`2:256:2:256:101` at 118, cutting the run from 65s to 42s. At that size 1.7's
+stage 2 is now *faster* than PrMers's (15s against 16s) and its stage 1 close
+behind (11s against 10s); what is left of PrMers's lead there is startup and
+gcd, and about 9s of 1.7's 42s is the transform search itself, which a repeat
+run of the same exponent does not pay again. This engine descends from gpuowl
+and is still at its best on wavefront-sized transforms; at 262144 words it
+does not fill the GPU.
 
 ## Quick start
 
