@@ -34,11 +34,14 @@ every version at once.
 
 ## Speed
 
-Full P-1 runs (stage 1 to B1, stage 2 to B2) at four exponents, same GPU
+Full P-1 runs (stage 1 to B1, stage 2 to B2) at five exponents, same GPU
 (NVIDIA RTX 3070), same bounds throughout (B1=100,000, B2=2,000,000). No
 checkpoint, no tuning cache. 1.8's M82589933 row is two runs agreeing within
-2%; every other row is a single clean run (see the note below the table for
-what that trades off).
+2%; every other row is a single clean run in a fresh sandbox with no
+tune.txt/fft-verified.txt carried over from any other run (see the note
+below the table for what that trades off). M100003573 was measured on
+1.8.1, not 1.8 -- functionally identical here, since nothing 1.8.1 changed
+touches stage 1, stage 2, or the default gcd path.
 
 | tool | version | setup | stage 1 | stage 2 | final gcd | **total** | vs 1.8 |
 |---|---|--:|--:|--:|--:|--:|--:|
@@ -59,28 +62,38 @@ what that trades off).
 | Mp_p-1_gpu | 1.7 | 26s | 1m36s | 2m11s | 3m03s | 7m16s | 1.68x |
 | PrMers | v99.95 | 1m06s | 3m22s | 4m57s | *(in stage)* | 9m25s | 2.18x |
 | [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | — | *no P-1 support* | n/a |
+| **M100003573** (~100M) | | | | | | | |
+| **Mp_p-1_gpu** | 1.8.1 | 16s | 2m05s | 2m49s | 16s | **5m28s** | **1.00x** |
+| Mp_p-1_gpu | 1.7 | 16s | 2m11s | 2m57s | 3m57s | 9m22s | 1.71x |
+| PrMers | v99.95 | — | 4m05s | 6m14s | *(in stage)* | 10m19s | 1.89x |
 
-**The gap is the gcd, and it grows with the exponent.** 1.8's stage 1/stage 2
-match 1.7's to within a couple of seconds at every size — both run the same
-GPU kernels, picking the same transform shape. The only thing that changed is
-`gcd CPU`: this project's own half-GCD (1.7) vs. GMP's `mpz_gcd` (1.8), which
-finishes in single-digit-to-teens seconds regardless of exponent while 1.7's
-own gcd cost scales with it — 41s at 26M digits, 3m03s at 82.6M.
-That is the entire 1.35x-1.68x gap against 1.7. Stage-2 accumulator res64
-matched at every exponent both versions were run at, confirming the gcd swap
-changed nothing about correctness.
+**The gap is the gcd, and it grows with the exponent.** 1.8/1.8.1's stage
+1/stage 2 match 1.7's to within a couple of seconds at every size -- both
+run the same GPU kernels, picking the same transform shape. The only thing
+that changed is `gcd CPU`: this project's own half-GCD (1.7) vs. GMP's
+`mpz_gcd` (1.8+), which finishes in single-digit-to-teens seconds regardless
+of exponent while 1.7's own gcd cost scales with it -- 41s at 26M digits,
+3m57s at 100M. That trend is clean and monotonic across all five points,
+1.35x-1.71x against 1.7. Stage-2 accumulator res64 matched at every
+Mp_p-1_gpu-vs-Mp_p-1_gpu comparison run, confirming the gcd swap changed
+nothing about correctness; PrMers's own res64 isn't directly comparable
+(different stage-2 construction -- see below) but its found/not-found
+verdict matched at every exponent all three tools were run at.
 
-**PrMers's gap widens for the same reason, on its side.** Its own gcd is
-folded into the stage figures above (marked *in stage*) rather than broken
-out, but the pattern is the same: 1.46x at 26M digits, 2.18x at 82.6M.
-PrMers's `setup` column is only populated at M82589933, carried over from an
-earlier, more tightly controlled measurement (two runs per tool, agreed
-within 10%, PrMers's own startup isolated from its stage-1 gcd); the other
-three exponents were each measured once, so PrMers's setup there is folded
-into its `stage 1` figure instead of broken out — a `—` means "not isolated
+**PrMers's gap trends the same way, on its side, but noisier.** Its own gcd
+is folded into the stage figures above (marked *in stage*) rather than
+broken out. Across the five exponents it ranges 1.40x-2.18x and trends
+upward with size overall, but not monotonically -- M100003573's 1.89x sits
+below M82589933's 2.18x despite being the larger exponent, so treat this as
+a real but noisier trend than 1.7's, not a clean law. PrMers's `setup`
+column is only populated at M82589933, carried over from an earlier, more
+tightly controlled measurement (two runs per tool, agreed within 10%,
+PrMers's own startup isolated from its stage-1 gcd); the other four
+exponents were each measured once, so PrMers's setup there is folded into
+its `stage 1` figure instead of broken out -- a `—` means "not isolated
 this time", not "zero". gpuowl has no P-1 task type in this build (checked
-against its own `Worktodo.cpp` parser), so it appears only at M82589933, as a
-non-comparison rather than a fourth contender.
+against its own `Worktodo.cpp` parser), so it appears only at M82589933, as
+a non-comparison rather than a fourth contender.
 
 Full methodology, PrMers's V-trace stage 2, and older-version numbers are in
 [MANUAL.md](MANUAL.md) and [CHANGELOG.md](CHANGELOG.md).
