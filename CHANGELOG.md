@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.8.1
+
+**A `Pminus1=` assignment's own B1/B2 are now used whenever present, by
+default.** 1.8 shipped this gated behind a `bounds_source = auto |
+assignment` config key that defaulted to *ignoring* the assignment and
+recomputing bounds instead -- which meant a `Pminus1=` line from AutoPrimeNet
+silently didn't do what it said unless the user knew to flip a switch. That
+key is gone: an assignment's own bounds now always win, falling back to
+config.txt's own b1/b2 (auto by default) only for a `Pfactor=` line or a bare
+exponent, which have none to honor. This changes what a submitted result
+under the default config *means* for anyone using the AutoPrimeNet interop
+added in 1.8 -- the reason for the version bump.
+
+**Fixed a real crash: `gcdHalf(x, x)` -- two exactly equal operands -- could
+hit a division-by-zero assertion.** Found while auditing the self-test suite
+for coverage gaps (see below): `reduceRec` can legitimately drive the second
+operand to exactly zero (the `a == b` case reduces to `(x, 0)` in one step),
+and the caller's fallback division didn't check for that before dividing by
+it. No prior test had ever called `gcdHalf` with two equal large operands --
+every existing differential/planted-factor test builds its two operands from
+independently random values, which are never equal in practice. `gcdHalf` is
+not the default gcd (GMP's `mpz_gcd` is, since 1.8) so this had no
+production impact, but it's a real bug in the reversion path, not just a
+test gap.
+
+**Selftest audit, on request: found and closed 6 coverage gaps.** Most
+notably, the bounds-precedence logic above had zero automated coverage
+before this release -- it had already changed direction twice in one
+session with nothing but manual smoke tests catching regressions. Pulled it
+out into a testable `resolveBounds()` (Worktodo.h/cpp) with its own test
+section. Also: a vacuous self-test assertion (`check(X.isZero() ||
+X.isZero(), ...)`, an OR of the identical expression) fixed to the real
+check it was clearly meant to be; new zero/equal/word-boundary-size gcd
+edge cases across all four gcd tiers (this is the test that caught the
+`gcdHalf` bug above); a correctness check that `gcd_threads` cannot silently
+corrupt results on the default (single-threaded `gcdGmp`) path even though
+it no longer has any effect on it; and two more malformed-input fixtures for
+the `Pfactor=`/`Pminus1=` worktodo parser (a non-decimal `known_factors`
+entry, and a smaller, more typo-shaped ambiguous `sieve_depth`/`B2_start`
+value).
+
+**Clarified three stale/unclear config.txt comments**, reported directly by
+a user reading the file: `gcd_threads`'s comment still described the old
+multi-threaded `gcdHalf` behavior as current, when the default gcd has
+ignored it since 1.8; `wait_for_work`/`wait_poll_seconds` never stated what
+values were accepted; and the AUTOPRIMENET INTEROP block wrongly called
+`Pfactor=` "trial-factoring-flavored work" -- this program does no trial
+factoring at all (that's Prime95's separate, unsupported `Factor=` keyword).
+Both `Pfactor=` and `Pminus1=` are P-1 work; they differ only in whether
+PrimeNet already chose B1/B2 (`Pminus1=`) or the client computes its own
+from `how_far_factored`/`tests_saved` (`Pfactor=` -- the same role this
+program's own `factored_to`/`bias` already play for `auto`).
+
 ## 1.8
 
 **worktodo.txt now accepts `Pfactor=`/`Pminus1=` assignment lines, the shape
