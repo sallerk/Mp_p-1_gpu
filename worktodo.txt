@@ -1,14 +1,28 @@
 # ===========================================================================
 #  worktodo.txt -- the exponent queue
 #
-#  One exponent per line, top to bottom. Mp_p-1_gpu works the first line,
-#  removes it once that job is done (found a factor or not -- either way,
-#  the result is in results.txt), then moves to the next. '#' starts a
-#  comment; blank lines are ignored -- same convention as config.txt.
+#  One line per job, top to bottom. Mp_p-1_gpu works the first line, removes
+#  it once that job is done (found a factor or not -- either way, the result
+#  is in results.txt), then moves to the next. '#' starts a comment; blank
+#  lines are ignored -- same convention as config.txt.
 #
-#  Every entry runs under the SAME config.txt settings (method, b1/b2, bias,
-#  stages, ...) -- only the exponent (and its factored_to default, when
-#  "auto") varies per entry. There is no per-line override syntax.
+#  A line is either a bare exponent:
+#
+#    82589933
+#
+#  or a Pfactor=/Pminus1= assignment, the shape AutoPrimeNet
+#  (github.com/tdulcet/AutoPrimeNet) and Prime95 itself write, e.g.:
+#
+#    Pminus1=1,2,82589933,-1,1000000,30000000
+#
+#  Both accept an optional leading assignment ID (32 hex chars, comma-
+#  terminated). A Pminus1= line's own B1/B2 are honored only when
+#  bounds_source = assignment in config.txt; see that key's comment there.
+#  See MANUAL.md for the full field list of each shape.
+#
+#  Every entry runs under the SAME config.txt settings (method, bias,
+#  stages, ...) -- only the exponent, and whatever an assignment line itself
+#  supplies (bounds, how-far-factored, known factors), varies per entry.
 #
 #  If a job is interrupted (Ctrl+C, or the program is killed), its line
 #  stays here untouched -- relaunching resumes that exponent from its
@@ -24,8 +38,7 @@
 #  exponent".
 # ===========================================================================
 
-# Add one exponent per line below, for example:
+# Add one job per line below, for example:
 #
 #   82589933
 #   86243
-

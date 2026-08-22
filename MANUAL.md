@@ -1,8 +1,9 @@
 # Mp_p-1_gpu — manual
 
 GPU **P-1** and **P+1** factoring of Mersenne numbers `M_p = 2^p - 1`, both with
-two stages. Windows / MSVC, no external dependencies — no GMP, no CUDA or
-OpenCL SDK.
+two stages. Windows / MSVC. Nothing to install to run it: no CUDA or OpenCL
+SDK, and GMP (used for the CPU gcd step since 1.8) is linked statically, so
+there's no DLL for it either.
 
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [ATTRIBUTION.md](ATTRIBUTION.md).
@@ -45,7 +46,9 @@ it anywhere, and run it. There is nothing to install:
 
 - **no Visual Studio and no compiler** — the C runtime is linked statically
 - **no OpenCL SDK** — OpenCL is loaded from your GPU driver at run time
-- no CUDA, no GMP, no Python
+- **no GMP install** — GMP (used for the gcd step, since 1.8) is linked
+  statically into the exe, not a separate DLL or runtime dependency
+- no CUDA, no Python
 
 The only requirement is a GPU driver with OpenCL support, which the AMD, nVidia
 and Intel desktop drivers all install by default. 64-bit Windows; the binary
@@ -59,12 +62,24 @@ about a minute.
 ## Build from source (optional)
 
 1. Install Visual Studio 2019 or 2022 with the **Desktop development with C++**
-   workload.
-2. Run `build.bat`. It produces `Mp_p-1_gpu.exe`.
+   workload. This includes a copy of [vcpkg](https://github.com/microsoft/vcpkg)
+   already — nothing extra to install for step 2.
+2. Install GMP, once:
+   ```
+   "%VCPKG_ROOT%\vcpkg.exe" install gmp:x64-windows-static
+   ```
+   (`VCPKG_ROOT` is set automatically by Visual Studio's build environment,
+   which `build.bat` also uses — run this from a "Developer Command Prompt for
+   VS", or just try `build.bat` first: it prints this exact command, with the
+   real path filled in, if GMP isn't found. If you have an older Visual
+   Studio without a bundled vcpkg, clone
+   [vcpkg](https://github.com/microsoft/vcpkg) yourself, run
+   `bootstrap-vcpkg.bat`, then the `install` line above, and either set
+   `VCPKG_ROOT` to that folder or place it at `Mp_p-1_gpu\vcpkg`.)
+3. Run `build.bat`. It produces `Mp_p-1_gpu.exe`.
 
-Nothing else is required. Python is optional — it regenerates `src/bundle.cpp`
-from the OpenCL sources, and the generated file is committed so the build works
-without it.
+Python is optional — it regenerates `src/bundle.cpp` from the OpenCL sources,
+and the generated file is committed so the build works without it.
 
 ## Quick start
 
@@ -113,18 +128,54 @@ touch:
 | `pp1_seeds` | comma-separated bases to try for P+1, default `3, 5, 7` |
 | `bias` | what a factor is worth to you, in units of one PRP test |
 | `bounds_tolerance` | how much extra work to accept for a better chance |
-| `gcd_threads` | CPU threads for the gcd phase |
+| `gcd_threads` | CPU threads for the gcd phase — no longer consulted by the default gcd (GMP's `mpz_gcd`, single-threaded, since 1.8); still respected by this program's own `gcdHalf` implementation, kept as the reversion path |
 | `username`, `computer_name` | written into results for PrimeNet |
+| `bounds_source` | `auto` (default) always computes B1/B2 here; `assignment` honors a `Pminus1=` worktodo line's own bounds — see below |
+| `wait_for_work` | `no` (default) exits on an empty queue; `yes` waits and rechecks it — for running alongside AutoPrimeNet |
+| `wait_poll_seconds` | how often to recheck, when `wait_for_work = yes` — default 5 |
 
 ## worktodo.txt — the exponent queue
 
 As of 1.4, exponents no longer live in `config.txt` — they live in
 `worktodo.txt` (or whatever `worktodo_file` points at), one per line,
 processed top to bottom. `#` starts a comment, blank lines are ignored, same
-as `config.txt`. Every entry runs under `config.txt`'s settings — `method`,
-`b1`/`b2`, `bias`, `stages`, and everything else — there is no per-line
-override; only the exponent (and, for `factored_to = auto`, its default)
-varies per entry.
+as `config.txt`. A bare exponent is this program's own shorthand: every such
+entry runs under `config.txt`'s settings — `method`, `b1`/`b2`, `bias`,
+`stages`, and everything else — only the exponent (and, for `factored_to =
+auto`, its default) varies per entry.
+
+A line can also be a `Pfactor=` or `Pminus1=` assignment — the shape
+[AutoPrimeNet](https://github.com/tdulcet/AutoPrimeNet) (the maintained
+successor to gpuowl's `primenet.py`) and Prime95 itself write. This program
+never talks to PrimeNet itself — no networking of any kind was added — but
+AutoPrimeNet runs as a separate program in the same directory, fetching
+assignments as these lines and uploading new `results.txt` lines, so the two
+tools share a queue without this program needing to know PrimeNet exists.
+Such a line carries its own `k,b,n,c` (validated as a Mersenne number — `k=1,
+b=2, c=-1` — anything else is a hard error, since this program factors
+nothing else) and, for `Pminus1=`, its own `B1`/`B2`:
+
+```
+Pminus1=1,2,86243,-1,50000,3000000
+```
+
+Whether that B1/B2 is actually used depends on `bounds_source` (above):
+`auto`, the default, ignores it and computes fresh bounds exactly as a bare
+exponent would; `assignment` pins it. Either way, the entry's exponent,
+trial-factoring depth (`Pfactor=`'s `how_far_factored` or `Pminus1=`'s
+`sieve_depth`, when present — it wins over `factored_to = auto`'s built-in
+default, though an *explicit* `factored_to = N` in config.txt still wins
+over that), assignment ID, and known factors are always taken from the line.
+An assignment ID and known factors, when present, are echoed back into
+`results.txt` (see **Results**, below) so AutoPrimeNet's own upload step
+sees what it expects.
+
+One thing an assignment can carry that this program cannot use yet:
+`Pminus1=`'s optional `B2_start`, meaning stage 2 was already partly walked
+elsewhere. There is no local checkpoint to seed that partial progress from
+(the `extend` reuse below needs one it can verify matches), so such a job
+prints a warning and walks the full `(B1,B2]` range instead — always
+correct, just not the minimal amount of work.
 
 A finished job's line is removed once its result is written to
 `results.txt`, and the next line starts — in the same run, no relaunch
@@ -314,13 +365,18 @@ P+1 -- they all share the same `gcdWithProgress` reporting.
 
 ```json
 {"status":"F","exponent":81679223,"worktype":"P-1","b1":2000000,"b2":60000000,
- "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.7"},
- "timestamp":"2026-07-28 17:29:54","user":"...","computer":"..."}
+ "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.8"},
+ "timestamp":"2026-07-28 17:29:54","user":"...","computer":"...",
+ "aid":"...","known-factors":["..."]}
 ```
 
 `status` is `F` (factor), `NF` (no factor), or `C` (a divisor that could not be
 split into primes — recorded for you, not submittable). One line per job, with
-both bounds when stage 2 ran.
+both bounds when stage 2 ran. `aid` and `known-factors` appear only when the
+job came from a `Pfactor=`/`Pminus1=` worktodo entry that carried them (see
+**worktodo.txt**, above) — present or absent the same way `user`/`computer`
+already are, and using the same JSON keys Prime95's own submission does, so
+AutoPrimeNet's upload step can match the line back to its assignment.
 
 Its `timestamp` is **UTC**, deliberately — it is the field mersenne.org
 actually wants. The console and `Mp_p-1_gpu.log` timestamps are your machine's
@@ -478,9 +534,22 @@ numbers.
 ## Scope and limitations
 
 - **Windows / MSVC only.** No Makefile, no Linux build, no CI.
-- **No PrimeNet automation.** `worktodo.txt` is a local queue, not a synced
-  one — no assignment IDs, no auto-fetch, no auto-submit. Results are written
-  for you to upload manually.
+- **No PrimeNet automation by this program itself** — no networking of any
+  kind, so no auto-fetch and no auto-submit. As of 1.8 `worktodo.txt`/
+  `results.txt` understand assignment IDs and known factors, the shape
+  [AutoPrimeNet](https://github.com/tdulcet/AutoPrimeNet) writes and reads —
+  see **worktodo.txt** and **Results**, above — so running AutoPrimeNet
+  alongside this program as a separate process covers the fetch/submit half.
+  Without it, results are written for you to upload manually, same as always.
+- **`Pminus1=`'s `B2_start` is parsed but not honored** (see **worktodo.txt**,
+  above) — a job carrying one prints a warning and walks the full `(B1,B2]`
+  range rather than only the uncovered part.
+- **The gcd phase can no longer be interrupted once started, only before.**
+  Since 1.8 it runs through GMP's `mpz_gcd`, which has no progress callback
+  (the previous implementation's Ctrl-C support relied on one). Ctrl-C is
+  still honored right up to the moment the call starts; the window this
+  narrows is small in practice — GMP's own worst case at real production
+  scale measured ~12s, against the previous implementation's ~140s.
 - **Minimum exponent is 786613.** Every FFT shape needs at least 3 bits/word
   (`FFTShape::minBpw()`); the smallest shape in the catalog is 256x256x2
   (262144 words), so nothing below this exponent has any usable shape at

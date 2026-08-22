@@ -175,6 +175,36 @@ extend = 1
 
 
 # ---------------------------------------------------------------------------
+#  AUTOPRIMENET INTEROP.
+#
+#  worktodo.txt accepts Pfactor=/Pminus1= assignment lines -- the shape
+#  AutoPrimeNet (github.com/tdulcet/AutoPrimeNet) and Prime95 itself write --
+#  alongside plain exponents. This program never talks to PrimeNet itself;
+#  AutoPrimeNet is a separate program you run alongside this one, watching the
+#  same worktodo.txt/results.txt.
+#
+#  A Pminus1= line carries its own B1/B2, chosen by PrimeNet for its own
+#  credit/economics, not this program's cost model.
+#
+#    auto        (default) always compute B1/B2 here, the same as a bare
+#                exponent -- this program's bounds model is measured against
+#                its own hardware and implementation, so trusting it is the
+#                safer default.
+#    assignment  honor a Pminus1= line's own B1/B2 when present. A Pfactor=
+#                line or a bare exponent has none to honor and falls back to
+#                auto regardless of this setting.
+# ---------------------------------------------------------------------------
+bounds_source = auto
+
+# Instead of exiting when worktodo.txt runs dry, wait and keep re-checking it
+# -- for an unattended run sitting alongside AutoPrimeNet, so the queue
+# running empty for a moment doesn't need a relaunch by hand. Off by default:
+# a script or a one-shot manual run expects an empty queue to exit cleanly.
+wait_for_work = 0
+wait_poll_seconds = 5
+
+
+# ---------------------------------------------------------------------------
 #  HOW HARD TO PUSH THE BOUNDS.
 #
 #  The expected-cost minimum this program optimises is very FLAT. Measured for

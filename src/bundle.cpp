@@ -6,7 +6,7 @@
 
 namespace {
 
-// base.cl (12584 bytes)
+// base.cl (12962 bytes)
 const char* const CHUNKS_0[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -389,7 +389,7 @@ void halfBar() { if (get_enqueued_local_size(0) / 2 > WAVEFRONT) { bar(); } }
 )cltag",
 nullptr};
 
-// carry.cl (29522 bytes)
+// carry.cl (30187 bytes)
 const char* const CHUNKS_1[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -758,7 +758,8 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
   for (i32 i = 0; i < CARRY_LEN; ++i) {
     u32 p = G_W * gx + WIDTH * (CARRY_LEN * gy + i) + me;
 
-    // Generate the FP32 and second GF31 weight shift
+    // Generate the FP32 a)cltag",
+R"cltag(nd second GF31 weight shift
     F w1 = optionalDouble(fancyMul(base, THREAD_WEIGHTS[G_W + gy * CARRY_LEN + i].x));
     F w2 = optionalDouble(fancyMul(w1, IWEIGHT_STEP));
     u32 weight_shift0 = weight_shift;
@@ -766,8 +767,7 @@ KERNEL(G_W) carry(P(Word2) out, CP(T2) in, u32 posROE, P(CarryABM) carryOut, Big
     if (weight_shift > 31) weight_shift -= 31;
     u32 weight_shift1 = weight_shift;
 
-    // Generate big-word/little-word fla)cltag",
-R"cltag(gs
+    // Generate big-word/little-word flags
     bool biglit0 = frac_bits <= FRAC_BPW_HI;
     bool biglit1 = frac_bits >= -FRAC_BPW_HI;   // Same as frac_bits + FRAC_BPW_HI <= FRAC_BPW_HI;
 
@@ -1060,7 +1060,7 @@ error - missing Carry kernel implementation
 )cltag",
 nullptr};
 
-// carryb.cl (1316 bytes)
+// carryb.cl (1351 bytes)
 const char* const CHUNKS_2[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -1100,7 +1100,7 @@ KERNEL(G_W) carryB(P(Word2) io, CP(CarryABM) carryIn) {
 )cltag",
 nullptr};
 
-// carryfused.cl (89465 bytes)
+// carryfused.cl (91607 bytes)
 const char* const CHUNKS_3[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -1529,7 +1529,8 @@ KERNEL(G_W) carryFused(P(F2) out, CP(F2) in, u32 posROE, P(i64) carryShuttle, P(
 
 #elif FFT_TYPE == FFT31
 
-// The "carryFused" is equivalent to the sequence: fftW, carryA, carryB, fftPremul.
+// The "carryFused" is equivalent to the sequence: f)cltag",
+R"cltag(ftW, carryA, carryB, fftPremul.
 // It uses "stairway forwarding" (forwarding carry data from one workgroup to the next)
 KERNEL(G_W) carryFused(P(GF31) out, CP(GF31) in, u32 posROE, P(i64) carryShuttle, P(u32) ready, TrigGF31 smallTrig, P(uint) bufROE) {
 
@@ -1542,8 +1543,7 @@ KERNEL(G_W) carryFused(P(GF31) out, CP(GF31) in, u32 posROE, P(i64) carryShuttle
   GF31 u[NW];
 
   u32 gr = get_group_id(0);
-  u3)cltag",
-R"cltag(2 me = get_local_id(0);
+  u32 me = get_local_id(0);
 
   u32 H = BIG_HEIGHT;
   u32 line = gr % H;
@@ -1903,7 +1903,8 @@ KERNEL(G_W) carryFused(P(GF61) out, CP(GF61) in, u32 posROE, P(i64) carryShuttle
 #else
   u32 pos = (gr - 1) * (G_W / WAVEFRONT) + me / WAVEFRONT;
   if (me % WAVEFRONT == 0) {
-    do { spin(); } while(atomic_load_explicit((atomic_uint *) &ready[pos], memory_order_relaxed, memory_scope_device) == 0);
+    do { spin(); } wh)cltag",
+R"cltag(ile(atomic_load_explicit((atomic_uint *) &ready[pos], memory_order_relaxed, memory_scope_device) == 0);
   }
   mem_fence(CLK_GLOBAL_MEM_FENCE);
   // Clear carry ready flag for next iteration
@@ -1922,8 +1923,7 @@ KERNEL(G_W) carryFused(P(GF61) out, CP(GF61) in, u32 posROE, P(i64) carryShuttle
   } else {
 
 #if !OLD_FENCE
-    // For gr==H we need the barrier since the carry reading is shifted, thus the per-wavefront trick does)cltag",
-R"cltag( not apply.
+    // For gr==H we need the barrier since the carry reading is shifted, thus the per-wavefront trick does not apply.
     bar();
 #endif
 
@@ -2293,7 +2293,8 @@ KERNEL(G_W) carryFused(P(T2) out, CP(T2) in, u32 posROE, P(i64) carryShuttle, P(
   const u64 combo_step = ((u64) bigword_weight_shift_minus1 << 32) + FRAC_BPW_HI;
   const u64 combo_bigstep = ((G_W * H * 2 - 1) * combo_step + (((u64) (G_W * H * 2 - 1) * FRAC_BPW_LO) >> 32)) % (31ULL << 32);
   combo_counter = word_index * combo_step + mul_hi(word_index, FRAC_BPW_LO) + 0xFFFFFFFFULL;
-  weight_shift = weight_shift % 31;
+  weight_shift = weight_shif)cltag",
+R"cltag(t % 31;
   u64 starting_combo_counter = combo_counter;     // Save starting counter before adding log2_NWORDS+1 for applying weights after carry propagation
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
@@ -2313,8 +2314,7 @@ KERNEL(G_W) carryFused(P(T2) out, CP(T2) in, u32 posROE, P(i64) carryShuttle, P(
     u32 weight_shift0 = weight_shift;
     combo_counter += combo_step;
     if (weight_shift > 31) weight_shift -= 31;
-    u32 weight_shift1 = wei)cltag",
-R"cltag(ght_shift;
+    u32 weight_shift1 = weight_shift;
 
     // Generate big-word/little-word flags
     bool biglit0 = frac_bits <= FRAC_BPW_HI;
@@ -2671,7 +2671,8 @@ KERNEL(G_W) carryFused(P(T2) out, CP(T2) in, u32 posROE, P(i64) carryShuttle, P(
   // Apply each 32 or 64 bit carry to the 2 words.  Apply weights.
   for (i32 i = 0; i < NW; ++i) {
     // Generate the second weight shift
-    u32 weight_shift0 = weight_shift;
+    u32 weight_shift0 = w)cltag",
+R"cltag(eight_shift;
     combo_counter += combo_step;
     if (weight_shift > 61) weight_shift -= 61;
     u32 weight_shift1 = weight_shift;
@@ -2718,8 +2719,7 @@ KERNEL(G_W) carryFused(P(T2) out, CP(T2) in, u32 posROE, P(i64) carryShuttle, P(
   GF31 u31[NW];
   GF61 u61[NW];
 
-  u32 gr = get_grou)cltag",
-R"cltag(p_id(0);
+  u32 gr = get_group_id(0);
   u32 me = get_local_id(0);
 
   u32 H = BIG_HEIGHT;
@@ -3045,7 +3045,8 @@ KERNEL(G_W) carryFused(P(T2) out, CP(T2) in, u32 posROE, P(i64) carryShuttle, P(
   // Weight is 2^[ceil(qj / n) - qj/n] where j is the word index, q is the Mersenne exponent, and n is the number of words.
   // Let s be the shift amount for word 1.  The shift amount for word x is ceil(x * (s - 1) + num_big_words_less_than_x) % 31.
   const u32 m31_log2_root_two = (u32) (((1ULL << 30) / NWORDS) % 31);
-  const u32 m31_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m31_log2_root_two % 31;
+  const u32 m31_b)cltag",
+R"cltag(igword_weight_shift = (NWORDS - EXP % NWORDS) * m31_log2_root_two % 31;
   const u32 m31_bigword_weight_shift_minus1 = (m31_bigword_weight_shift + 30) % 31;
   const u32 m61_log2_root_two = (u32) (((1ULL << 60) / NWORDS) % 61);
   const u32 m61_bigword_weight_shift = (NWORDS - EXP % NWORDS) * m61_log2_root_two % 61;
@@ -3069,8 +3070,7 @@ KERNEL(G_W) carryFused(P(T2) out, CP(T2) in, u32 posROE, P(i64) carryShuttle, P(
   const u64 m61_combo_bigstep = ((G_W * H * 2 - 1) * m61_combo_step + (((u64) (G_W * H * 2 - 1) * FRAC_BPW_LO) >> 32)) % (61ULL << 32);
   m61_combo_counter = word_index * m61_combo_step + mul_hi(word_index, FRAC_BPW_LO) + 0xFFFFFFFFULL;
   m61_weight_shift = m61_weight_shift % 61;
-  u64 m61_starting_combo_counter = m61_combo_counter;     // Save starting counter before adding log2_NWORDS+1 for applying weights after carry p)cltag",
-R"cltag(ropagation
+  u64 m61_starting_combo_counter = m61_combo_counter;     // Save starting counter before adding log2_NWORDS+1 for applying weights after carry propagation
 
   // We also adjust shift amount for the fact that NTT returns results multiplied by 2*NWORDS.
   const u32 log2_NWORDS = (WIDTH == 256 ? 8 : WIDTH == 512 ? 9 : WIDTH == 1024 ? 10 : 12) +
@@ -3252,7 +3252,7 @@ error - missing CarryFused kernel implementation
 )cltag",
 nullptr};
 
-// carryinc.cl (16937 bytes)
+// carryinc.cl (17229 bytes)
 const char* const CHUNKS_4[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -3532,9 +3532,9 @@ Word2 OVERLOAD weightAndCarryPair(F2 uF2, GF31 u31, GF61 u61, F invWeight1, F in
 }
 
 // Like weightAndCarryPair except that a strictly accurate calculation of the first Word and carry is not required.  Second word may also be sloppy.
-Word2 OVERLOAD weightAndCarryPairSloppy(F2 uF2, GF31 u31, GF61 u61, F invWeight1, F invWeight2, u32 m31_invWeight1, u32 m31_invWeight2,
-                                        u32 m61_invWeight1, u32 m61_invWeight2, bool hasInCarry, i64 inCarry, bool b1, bool b2, iCARRY *outCarry, float* maxROE, float* carryMax))cltag",
-R"cltag( {
+Word2 OVERLOAD weightAndCarryPairSl)cltag",
+R"cltag(oppy(F2 uF2, GF31 u31, GF61 u61, F invWeight1, F invWeight2, u32 m31_invWeight1, u32 m31_invWeight2,
+                                        u32 m61_invWeight1, u32 m61_invWeight2, bool hasInCarry, i64 inCarry, bool b1, bool b2, iCARRY *outCarry, float* maxROE, float* carryMax) {
   iCARRY midCarry;
   i128 tmp1 = weightAndCarryOne(uF2.x, u31.x, u61.x, invWeight1, m31_invWeight1, m61_invWeight1, hasInCarry, inCarry, maxROE);
   Word a = carryStepUnsignedSloppy(tmp1, &midCarry, b1);
@@ -3550,7 +3550,7 @@ error - missing weightAndCarryPair implementation
 )cltag",
 nullptr};
 
-// carryutil.cl (31658 bytes)
+// carryutil.cl (32427 bytes)
 const char* const CHUNKS_5[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -3935,7 +3935,8 @@ i96 weightAndCarryOne(float uF2, Z61 u61, float F2_invWeight, u32 m61_invWeight,
   float uF2int = fma(uF2, 4.3368086899420177360298112034798e-19f, RNDVAL);    // Divide by M61 and round to int
   i32 nF2 = RNDVALfloatToInt(uF2int);
 
-  // Optionally calculate roundoff error
+  // Option)cltag",
+R"cltag(ally calculate roundoff error
   float roundoff = fabs(fma(uF2, 4.3368086899420177360298112034798e-19f, RNDVAL - uF2int));
   *maxROE = max(*maxROE, roundoff);
 
@@ -3943,8 +3944,7 @@ i96 weightAndCarryOne(float uF2, Z61 u61, float F2_invWeight, u32 m61_invWeight,
   i32 vhi = nF2 >> 3;
   u64 vlo = ((u64)nF2 << 61) | n61;
   i96 value = make_i96(vhi, vlo);                // (nF2 << 61) + n61
-  value = sub(value, nF2);                       // nF2 * )cltag",
-R"cltag(M61 + n61
+  value = sub(value, nF2);                       // nF2 * M61 + n61
 
   // Mul by 3 and add carry
 #if MUL3
@@ -4429,7 +4429,7 @@ kernel void testKernel(global int* in, global double* out) {
 )cltag",
 nullptr};
 
-// fft-middle.cl (25735 bytes)
+// fft-middle.cl (26639 bytes)
 const char* const CHUNKS_7[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -5006,7 +5006,8 @@ void OVERLOAD middleMul2(F2 *u, u32 x, u32 y, float factor, TrigFP32 trig) {
     F2 base, base_minus1, base_plus1;
     for (u32 i = 1; ; i += 3) {
       if (i-1 == MIDDLE-1) {
-        base_minus1 = slowTrig_N(x * y + x * SMALL_HEIGHT * (i - 1), ND / MIDDLE * i) * factor;
+        base_minus1 = slowTrig_N(x * y +)cltag",
+R"cltag( x * SMALL_HEIGHT * (i - 1), ND / MIDDLE * i) * factor;
         WADD(i-1, base_minus1);
         break;
       } else if (i == MIDDLE-1) {
@@ -5019,8 +5020,7 @@ void OVERLOAD middleMul2(F2 *u, u32 x, u32 y, float factor, TrigFP32 trig) {
         base = slowTrig_N(x * y + x * SMALL_HEIGHT * i, ND / MIDDLE * (i + 1)) * factor;
         cmul_a_by_fancyb_and_conjfancyb(&base_plus1, &base_minus1, base, w);
         WADD(i-1, base_minus1);
-        WADD(i,)cltag",
-R"cltag(   base);
+        WADD(i,   base);
         WADD(i+1, base_plus1);
         if (i+1 == MIDDLE-1) break;
       }
@@ -5339,7 +5339,7 @@ void OVERLOAD middleShuffle(local GF61 *lds, GF61 *u) {
 )cltag",
 nullptr};
 
-// fft10.cl (415 bytes)
+// fft10.cl (435 bytes)
 const char* const CHUNKS_8[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -5364,7 +5364,7 @@ void fft10(T2 *u) {
 )cltag",
 nullptr};
 
-// fft11.cl (5701 bytes)
+// fft11.cl (5885 bytes)
 const char* const CHUNKS_9[] = {
 R"cltag(// Copyright (C) Mihai Preda & George Woltman
 
@@ -5553,7 +5553,7 @@ void fft11(T2 *u) {
 )cltag",
 nullptr};
 
-// fft12.cl (2088 bytes)
+// fft12.cl (2169 bytes)
 const char* const CHUNKS_10[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -5639,7 +5639,7 @@ void fft12(T2 *u) {
 )cltag",
 nullptr};
 
-// fft13.cl (9288 bytes)
+// fft13.cl (9449 bytes)
 const char* const CHUNKS_11[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -5805,7 +5805,7 @@ void fft13(T2 *u) {
 )cltag",
 nullptr};
 
-// fft14.cl (3362 bytes)
+// fft14.cl (3464 bytes)
 const char* const CHUNKS_12[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -5912,7 +5912,7 @@ void fft14(T2 *u) {
 )cltag",
 nullptr};
 
-// fft15.cl (1822 bytes)
+// fft15.cl (1901 bytes)
 const char* const CHUNKS_13[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -5996,7 +5996,7 @@ void fft15(T2 *u) {
 )cltag",
 nullptr};
 
-// fft16.cl (6422 bytes)
+// fft16.cl (6702 bytes)
 const char* const CHUNKS_14[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -6281,7 +6281,7 @@ void OVERLOAD fft16(GF61 *u) {
 )cltag",
 nullptr};
 
-// fft3.cl (577 bytes)
+// fft3.cl (611 bytes)
 const char* const CHUNKS_15[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -6320,7 +6320,7 @@ void fft3(T2 *u) { fft3by(u, 0, 1, 3); }
 )cltag",
 nullptr};
 
-// fft4.cl (4854 bytes)
+// fft4.cl (5096 bytes)
 const char* const CHUNKS_16[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -6567,7 +6567,7 @@ void OVERLOAD fft4(GF61 *u) { fft4by(u, 0, 1, 4); }
 )cltag",
 nullptr};
 
-// fft5.cl (1176 bytes)
+// fft5.cl (1227 bytes)
 const char* const CHUNKS_17[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -6623,7 +6623,7 @@ void fft5(T2 *u) { return fft5by(u, 0, 1, 5); }
 )cltag",
 nullptr};
 
-// fft6.cl (941 bytes)
+// fft6.cl (983 bytes)
 const char* const CHUNKS_18[] = {
 R"cltag(// Copyright (C) Mihai Preda & George Woltman
 
@@ -6670,7 +6670,7 @@ void fft6(T2 *u) {
 )cltag",
 nullptr};
 
-// fft7.cl (3034 bytes)
+// fft7.cl (3148 bytes)
 const char* const CHUNKS_19[] = {
 R"cltag(// Copyright (C) Mihai Preda & George Woltman
 
@@ -6789,7 +6789,7 @@ void fft7(T2 *u) { return fft7by(u, 0, 1, 7); }
 )cltag",
 nullptr};
 
-// fft8.cl (6335 bytes)
+// fft8.cl (6500 bytes)
 const char* const CHUNKS_20[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -6959,7 +6959,7 @@ void OVERLOAD fft8(GF61 *u) {
 )cltag",
 nullptr};
 
-// fft9.cl (1508 bytes)
+// fft9.cl (1575 bytes)
 const char* const CHUNKS_21[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -7031,7 +7031,7 @@ void fft9(T2 *u) {
 )cltag",
 nullptr};
 
-// fftbase.cl (31190 bytes)
+// fftbase.cl (32034 bytes)
 const char* const CHUNKS_22[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -7445,7 +7445,8 @@ void finish_tabMul8_fft8(u32 WG, local T2 *lds, Trig trig, T *preloads, T2 *u, u
   // Apply cosine0 to u[0]
   if (f < WG/8) u[0] = u[0] * preloads[0];
 
-  if (save_one_more_mul) {   // This should always be the best option.  ROCm optimizer is doing something weird in new_fft_WIDTH case.
+  if (save_one_more_mul) {   // This should always be the best option.  ROCm optimizer is doing )cltag",
+R"cltag(something weird in new_fft_WIDTH case.
 
     // Apply cosine4, cosine5/cosine1, cosine6/cosine2, cosine7/cosine3 to u[4] through u[7] using FMA
     X2_via_FMA(u[0], preloads[4], u[4]);
@@ -7453,8 +7454,7 @@ void finish_tabMul8_fft8(u32 WG, local T2 *lds, Trig trig, T *preloads, T2 *u, u
     X2_via_FMA(u[2], preloads[6], u[6]);  u[6] = mul_t4(u[6]);
     X2_via_FMA(u[3], preloads[7], u[7]);  u[7] = mul_3t8_delayed(u[7]);
 
-    // Preload one li)cltag",
-R"cltag(ne of sine/cosines and one line of cosines for second tabMul.  We'll later broadcast these values as needed using LDS.
+    // Preload one line of sine/cosines and one line of cosines for second tabMul.  We'll later broadcast these values as needed using LDS.
     if (f == 1) {
       preloads[8] = trig1[7*WG + me];             // Sine/cosines for second tabMul
       preloads[9] = trig1[8*WG + 8*WG + me];      // Cosines for second tabMul
@@ -7881,7 +7881,7 @@ void OVERLOAD tabMul(u32 WG, TrigGF61 trig, GF61 *u, u32 n, u32 f, u32 me) {
 )cltag",
 nullptr};
 
-// fftheight.cl (10656 bytes)
+// fftheight.cl (11033 bytes)
 const char* const CHUNKS_23[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -8263,7 +8263,7 @@ void OVERLOAD new_fft_HEIGHT2_2(local GF61 *lds, GF61 *u, TrigGF61 trig)  { fft_
 )cltag",
 nullptr};
 
-// ffthin.cl (3279 bytes)
+// ffthin.cl (3402 bytes)
 const char* const CHUNKS_24[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -8391,7 +8391,7 @@ KERNEL(G_H) fftHinGF61(P(T2) out, CP(T2) in, Trig smallTrig) {
 )cltag",
 nullptr};
 
-// fftmiddlein.cl (10617 bytes)
+// fftmiddlein.cl (11032 bytes)
 const char* const CHUNKS_25[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -8811,7 +8811,7 @@ KERNEL(256) fftMiddleInGF61(P(T2) out, P(T2) in, Trig trig) {
 )cltag",
 nullptr};
 
-// fftmiddleout.cl (12706 bytes)
+// fftmiddleout.cl (13150 bytes)
 const char* const CHUNKS_26[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -9260,7 +9260,7 @@ KERNEL(256) fftMiddleOutGF61(P(T2) out, P(T2) in, Trig trig) {
 )cltag",
 nullptr};
 
-// fftp.cl (24664 bytes)
+// fftp.cl (25231 bytes)
 const char* const CHUNKS_27[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -9655,7 +9655,8 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig, BigTabFP32 THREAD_WEIG
 #elif FFT_TYPE == FFT3161
 
 // fftPremul: weight words with IBDWT weights followed by FFT-width.
-KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig) {
+KERNEL(G_W) fftP(P(T2)cltag",
+R"cltag() out, CP(Word2) in, Trig smallTrig) {
   local GF61 lds61[WIDTH / 2];
   local GF31 *lds31 = (local GF31 *) lds61;
   GF31 u31[NW];
@@ -9667,8 +9668,7 @@ KERNEL(G_W) fftP(P(T2) out, CP(Word2) in, Trig smallTrig) {
   P(GF31) out31 = (P(GF31)) (out + DISTGF31);
   TrigGF31 smallTrig31 = (TrigGF31) (smallTrig + DISTWTRIGGF31);
   P(GF61) out61 = (P(GF61)) (out + DISTGF61);
-  TrigGF61 smallTrig61 = (TrigGF6)cltag",
-R"cltag(1) (smallTrig + DISTWTRIGGF61);
+  TrigGF61 smallTrig61 = (TrigGF61) (smallTrig + DISTWTRIGGF61);
 
   in += g * WIDTH;
 
@@ -9833,7 +9833,7 @@ error - missing FFTp kernel implementation
 )cltag",
 nullptr};
 
-// fftw.cl (2533 bytes)
+// fftw.cl (2632 bytes)
 const char* const CHUNKS_28[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -9937,7 +9937,7 @@ KERNEL(G_W) fftWGF61(P(T2) out, CP(T2) in, Trig smallTrig) {
 )cltag",
 nullptr};
 
-// fftwidth.cl (10233 bytes)
+// fftwidth.cl (10559 bytes)
 const char* const CHUNKS_29[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -10268,7 +10268,7 @@ void OVERLOAD new_fft_WIDTH2(local GF61 *lds, GF61 *u, TrigGF61 trig) { fft_WIDT
 )cltag",
 nullptr};
 
-// math.cl (59820 bytes)
+// math.cl (60908 bytes)
 const char* const CHUNKS_30[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -10573,15 +10573,15 @@ T2 OVERLOAD csqa(T2 a, T2 c) { return U2(fma(a.x, a.x, fma(a.y, -a.y, c.x)), fma
 T2 OVERLOAD csq_neg(T2 a) { return U2(fma(-a.x, a.x, a.y * a.y), mulminus2(a.x) * a.y); }                               // NOT USED
 
 // Complex multiply
-T2 OVERLOAD cmul(T2 a, T2 b) { return U2(fma(a.x, b.x, -a.y * b.y), fma(a.x, b.y, a.y * b.x)); }
+T2 OVERLOAD cmul(T2 a, T2 b) { return U2(fma(a.x, b.x, -a.y * b.y), fma()cltag",
+R"cltag(a.x, b.y, a.y * b.x)); }
 
 T2 OVERLOAD cfma(T2 a, T2 b, T2 c) { return U2(fma(a.x, b.x, fma(a.y, -b.y, c.x)), fma(a.y, b.x, fma(a.x, b.y, c.y))); }
 
 T2 OVERLOAD cmul_by_conjugate(T2 a, T2 b) { return cmul(a, conjugate(b)); }
 
 // Multiply a by b and conjugate(b).  This saves 2 multiplies.
-void OVERLOAD c)cltag",
-R"cltag(mul_a_by_b_and_conjb(T2 *res1, T2 *res2, T2 a, T2 b) {
+void OVERLOAD cmul_a_by_b_and_conjb(T2 *res1, T2 *res2, T2 a, T2 b) {
   T axbx = a.x * b.x;
   T aybx = a.y * b.x;
   res1->x = fma(a.y, -b.y, axbx), res1->y = fma(a.x,  b.y, aybx);
@@ -10884,7 +10884,8 @@ Z31 OVERLOAD modM31(Z31 a) { return optional_add(a, 0x80000001); }              
 Z31 OVERLOAD modM31(i32 a) { return optional_sub(a, 0x80000001); }                    // Assumes a is not 0x80000000 (which would return 0xFFFFFFFF)
 #endif
 
-Z31 OVERLOAD modM31(u64 a) {                                          // a must be less than 0xFFFFFFFF7FFFFFFF
+Z31 OVERLOAD modM31(u64 a) {                                          // a )cltag",
+R"cltag(must be less than 0xFFFFFFFF7FFFFFFF
   u32 alo = a & M31;
   u32 amid = (a >> 31) & M31;
   u32 ahi = a >> 62;
@@ -10894,8 +10895,7 @@ Z31 OVERLOAD modM31(i64 a) {                                          // abs(a) 
   u32 alo = a & M31;
   u32 amid = ((u64) a >> 31) & M31;                                   // Unsigned shift might be faster than signed shift
   u32 ahi = a >> 62;                                                  // Sign extend the top bits
-  return mo)cltag",
-R"cltag(dM31(ahi + amid + alo);                                    // This is where caller must assure a 32-bit overflow does not occur
+  return modM31(ahi + amid + alo);                                    // This is where caller must assure a 32-bit overflow does not occur
 }
 Z31 OVERLOAD modM31q(u64 a) {                                         // Quick version, a < 2^62
   u32 alo = a & M31;
@@ -11176,7 +11176,8 @@ void OVERLOAD X2s_conjb(GF61 *a, GF61 *b, u32 m61_count) { X2_conjb_internal(a, 
 
 // Philosophy: This Z61/GF61 implementation uses faster, sloppier mod M61 reduction where the end result is in the range 0..M61+epsilon.
 // This implementation also handles subtractions by adding enough M61s to make a value positive.  This allows us to always deal with positive
-// intermediate results.  The downside is that a caller using the sloppy/quick routines must keep track of how large unreduced values can get.
+// intermediate results.  The downside is that a caller using the sloppy/quick routines must keep tr)cltag",
+R"cltag(ack of how large unreduced values can get.
 // An alternative implementation is to have Z61 be an i64 (costs us a precious bit of precision) but is surprisingly slower (at least on TitanV) because
 //      mod(a - b),             where the mod routinue uses a signed right shift is slower than
 //      mod(a + (M61*2 - b))    where the mod routine uses an unsigned shift right.
@@ -11186,8 +11187,7 @@ void OVERLOAD X2s_conjb(GF61 *a, GF61 *b, u32 m61_count) { X2_conjb_internal(a, 
 #elif 1   // Faster version that keeps results in the range 0 .. M61+epsilon
 
 u64 OVERLOAD get_Z61(Z61 a) { Z61 m = a - M61; return (m & 0x8000000000000000ULL) ? a : m; }  // Get value in range 0 to M61-1
-i64 OVERLOAD get_balanced_Z61(Z61 a) { return (a >= 0x100000000000)cltag",
-R"cltag(0000ULL) ? (i64) a - (i64) M61 : (i64) a; }  // Get balanced value in range -M61/2 to M61/2
+i64 OVERLOAD get_balanced_Z61(Z61 a) { return (a >= 0x1000000000000000ULL) ? (i64) a - (i64) M61 : (i64) a; }  // Get balanced value in range -M61/2 to M61/2
 
 // Internal routine to bring Z61 value into the range 0..M61+epsilon
 Z61 OVERLOAD modM61(Z61 a) { return (a & M61) + (a >> 61); }
@@ -11364,7 +11364,7 @@ void OVERLOAD X2s_conjb(GF61 *a, GF61 *b, const u32 a_m61_count, const u32 b_m61
 )cltag",
 nullptr};
 
-// middle.cl (61322 bytes)
+// middle.cl (62392 bytes)
 const char* const CHUNKS_31[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -11644,14 +11644,14 @@ void OVERLOAD readMiddleOutLine(T2 *u, CP(T2) in, u32 y, u32 x) {
 
 // Caller must either give us u values that are grouped by x values (i.e. the order in which they were read in) with the out pointer
 // adjusted to effect a transpose.  Or caller must transpose the x and y values and send us an out pointer with thread_id added in.
-// In other words, caller is responsible for deciding the best way to transpose x and y values.
+// In other words, caller is responsible for decidin)cltag",
+R"cltag(g the best way to transpose x and y values.
 
 void OVERLOAD writeMiddleOutLine (P(T2) out, T2 *u, u32 chunk_y, u32 chunk_x)
 {
   //u32 SIZEY = OUT_WG / OUT_SIZEX;
   //u32 num_x_chunks = SMALL_HEIGHT / OUT_SIZEX;  // Number of x chunks
-  //u32 num_y_chunks = WIDTH / SIZEY;        )cltag",
-R"cltag(     // Number of y chunks
+  //u32 num_y_chunks = WIDTH / SIZEY;             // Number of y chunks
 
 #if PAD_SIZE > 0
 
@@ -11900,7 +11900,8 @@ void OVERLOAD writeMiddleOutLine (P(F2) out, F2 *u, u32 chunk_y, u32 chunk_x)
   out += chunk_y * MIDDLE * OUT_WG +             // Write y chunks after middles
          chunk_x * MIDDLE * WIDTH * OUT_SIZEX;   // num_y_chunks * OUT_WG = WIDTH / SIZEY * MIDDLE * OUT_WG
                                         //                       = MIDDLE * WIDTH / (OUT_WG / OUT_SIZEX) * OUT_WG
-                                        //                       = MIDDLE * WIDTH * OUT_SIZEX
+                            )cltag",
+R"cltag(            //                       = MIDDLE * WIDTH * OUT_SIZEX
   // Write each u[i] sequentially
   for (int i = 0; i < MIDDLE; ++i) { NTSTORE(out[i * OUT_WG], u[i]); }
 #endif
@@ -11913,8 +11914,7 @@ void OVERLOAD readCarryFusedLine(CP(F2) in, F2 *u, u32 line) {
   // Adjust in pointer based on the x value used in writeMiddleOutLine
   u32 BIG_PAD_SIZE = (PAD_SIZE/2+1)*PAD_SIZE;
   u32 fftMiddleOut_x = line % SMALL_HEIGHT;                     // The fftMiddleOut x value
- )cltag",
-R"cltag( u32 chunk_x = fftMiddleOut_x / OUT_SIZEX;                     // The fftMiddleOut chunk_x value
+  u32 chunk_x = fftMiddleOut_x / OUT_SIZEX;                     // The fftMiddleOut chunk_x value
   in += chunk_x * (WIDTH * MIDDLE * OUT_SIZEX + WIDTH / SIZEY * PAD_SIZE + BIG_PAD_SIZE); // Adjust in pointer the same way writeMiddleOutLine did
   u32 x_within_out_wg = fftMiddleOut_x % OUT_SIZEX;             // There were OUT_SIZEX x values within OUT_WG
   in += x_within_out_wg * SIZEY;                                // Adjust in pointer the same way writeMiddleOutLine wrote x values within OUT_WG
@@ -12166,7 +12166,8 @@ void OVERLOAD writeCarryFusedLine(T2 *u, P(T2) out, u32 line) {
 }
 
 //****************************************************************************************
-// Pair of routines to read/write data to/from fftMiddleIn
+// Pair of routines to read/write data to/from fftM)cltag",
+R"cltag(iddleIn
 //****************************************************************************************
 
 //      x         ranges 0...WIDTH-1 (multiples of BIG_HEIGHT)
@@ -12181,8 +12182,7 @@ void OVERLOAD readMiddleInLine(T2 *u, CP(T2) in, u32 y, u32 x) {
 // NOTE:  writeMiddleInLine uses the same definition of x,y as readMiddleInLine.  Caller transposes 16x16 blocks of FFT data before calling writeMiddleInLine.
 void OVERLOAD writeMiddleInLine (P(T2) out, T2 *u, u32 y, u32 x)
 {
-  out += (x / 16 * SIZEW) + (y % 16 * SIZEBLK) + (SWIZ)cltag",
-R"cltag((y % 16, y / 16) * 16) + (x % 16);
+  out += (x / 16 * SIZEW) + (y % 16 * SIZEBLK) + (SWIZ(y % 16, y / 16) * 16) + (x % 16);
   for (i32 i = 0; i < MIDDLE; ++i) { NTSTORE(out[i * SIZEM], u[i]); }
 }
 
@@ -12442,7 +12442,7 @@ void OVERLOAD writeMiddleOutLine (P(GF61) out, GF61 *u, u32 y, u32 x) {
 )cltag",
 nullptr};
 
-// selftest.cl (6444 bytes)
+// selftest.cl (6730 bytes)
 const char* const CHUNKS_32[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -12733,7 +12733,7 @@ KERNEL(256) testTrig(global double2* out) {
 )cltag",
 nullptr};
 
-// tailmul.cl (14650 bytes)
+// tailmul.cl (15144 bytes)
 const char* const CHUNKS_33[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -13232,7 +13232,7 @@ KERNEL(G_H) tailMulGF61(P(T2) out, CP(T2) in, CP(T2) a, Trig smallTrig) {
 )cltag",
 nullptr};
 
-// tailsquare.cl (37000 bytes)
+// tailsquare.cl (38163 bytes)
 const char* const CHUNKS_34[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 
@@ -13748,7 +13748,8 @@ KERNEL(G_H * 2) tailSquare(P(T2) out, CP(T2) in, Trig smallTrig) {
 
   u32 line = !isSecondHalf ? line_u : line_v;
 
-  // Read lines u and v
+  // Read lines)cltag",
+R"cltag( u and v
   readTailFusedLine(inF2, u, line, lowMe);
 
 #if ZEROHACK_H
@@ -13764,8 +13765,7 @@ KERNEL(G_H * 2) tailSquare(P(T2) out, CP(T2) in, Trig smallTrig) {
 
   // Do a little bit of memory access and a little bit of DP math.  Good on a Radeon VII.
 #elif TAIL_TRIGS32 == 1
-  // Ca)cltag",
-R"cltag(lculate number of trig values used by fft_HEIGHT (see genSmallTrigCombo in trigBufCache.cpp)
+  // Calculate number of trig values used by fft_HEIGHT (see genSmallTrigCombo in trigBufCache.cpp)
   // The trig values used here are pre-computed and stored after the fft_HEIGHT trig values.
   u32 height_trigs = SMALL_HEIGHT*1;
   // Read a hopefully cached line of data and one non-cached F2 per line
@@ -14235,7 +14235,8 @@ KERNEL(G_H) tailSquareGF61(P(T2) out, CP(T2) in, Trig smallTrig) {
   bar();
   fft_HEIGHT(lds + zerohack, v, smallTrig61 + zerohack);
 #else
-  fft_HEIGHT(lds, u, smallTrig61);
+  fft_HEIGHT(lds, u, sma)cltag",
+R"cltag(llTrig61);
   bar();
   fft_HEIGHT(lds, v, smallTrig61);
 #endif
@@ -14255,8 +14256,7 @@ KERNEL(G_H) tailSquareGF61(P(T2) out, CP(T2) in, Trig smallTrig) {
   // Calculate number of trig values used by fft_HEIGHT (see genSmallTrigCombo in trigBufCache.cpp)
   // The trig values used here are pre-computed and stored after the fft_HEIGHT trig values.
   u32 height_trigs = SMALL_HEIGHT*1;
-  // Rea)cltag",
-R"cltag(d pre-computed trig values
+  // Read pre-computed trig values
   GF61 trig = NTLOAD(smallTrig61[height_trigs + line1*G_H + me]);
 #endif
 
@@ -14402,7 +14402,7 @@ KERNEL(G_H * 2) tailSquareGF61(P(T2) out, CP(T2) in, Trig smallTrig) {
 )cltag",
 nullptr};
 
-// tailutil.cl (26047 bytes)
+// tailutil.cl (26737 bytes)
 const char* const CHUNKS_35[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -14840,7 +14840,8 @@ void OVERLOAD reverse2(local GF31 *lds, GF31 *u) {
   //	u[4] =   u[7]rev   v[7]rev
   //	u[5] =   u[6]rev   v[6]rev
   //	u[6] =   u[5]rev   v[5]rev
-  //	u[7] =   u[4]rev   v[4]rev
+  //	u[7] =   u[4]rev   v[)cltag",
+R"cltag(4]rev
   bar();
   lds += me % G_H + (me / G_H) * NH/2 * G_H;
   for (u32 i = 0; i < NH / 2; ++i) { u[NH/2 + i] = lds[i * G_H]; }
@@ -14850,8 +14851,7 @@ void OVERLOAD reverse2(local GF31 *lds, GF31 *u) {
 // The u values are in threads < G_H, the v values to reverse in threads >= G_H.
 // Whereas reverseLine leaves u values alone.  This reverseLine moves u values around
 // so that pairSq2 can easily operate on pairs.  This means for NH = 4, web output:
-//      u[0]    u[1)cltag",
-R"cltag(]            // Returned in u[0]
+//      u[0]    u[1]            // Returned in u[0]
 //      u[2]    u[3]            // Returned in u[1]
 //      v[3]rev v[2]rev         // Returned in u[2]
 //      v[1]rev v[0]rev         // Returned in u[3]
@@ -15098,7 +15098,7 @@ void OVERLOAD unreverseLine2(local GF61 *lds, GF61 *u) {
 )cltag",
 nullptr};
 
-// transpose.cl (2041 bytes)
+// transpose.cl (2128 bytes)
 const char* const CHUNKS_36[] = {
 R"cltag(// Copyright (C) Mihai Preda
 
@@ -15190,7 +15190,7 @@ KERNEL(64) transposeIn(P(Word2) out, CP(Word2) in) {
 )cltag",
 nullptr};
 
-// trig.cl (3133 bytes)
+// trig.cl (3283 bytes)
 const char* const CHUNKS_37[] = {
 R"cltag(// Copyright (C) George Woltman and Mihai Preda
 
@@ -15345,7 +15345,7 @@ F2 OVERLOAD slowTrig_N(u32 k, u32 kBound)   {
 )cltag",
 nullptr};
 
-// weight.cl (5029 bytes)
+// weight.cl (5191 bytes)
 const char* const CHUNKS_38[] = {
 R"cltag(// Copyright (C) Mihai Preda and George Woltman
 

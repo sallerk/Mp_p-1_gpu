@@ -36,6 +36,19 @@ Renaming the *project* is unaffected: the name, executable, banner and
 configuration files are ours to change. Branding and authorship are separate
 things.
 
+## Third-party libraries
+
+**GMP** (the GNU Multiple Precision Arithmetic Library) — the Free Software
+Foundation and GMP's contributors, <https://gmplib.org/>. Since 1.8, the
+production gcd(x-1, 2^p-1) call in `Gcd.cpp`'s `gcdGmp` delegates to GMP's
+`mpz_gcd` (statically linked; no DLL is shipped). GMP is offered under the
+GNU LGPL v3 or later, or alternatively the GNU GPL v2 or later, at the
+licensee's choice; since Mp_p-1_gpu is GPLv3 in full already (see above),
+that choice has no practical effect here. `BigInt.{h,cpp}`/`Gcd.{h,cpp}`'s
+own hand-rolled multiprecision arithmetic and half-GCD (below) are unaffected
+and remain original to this project — GMP replaces only what `gcd()` calls,
+not those implementations, which stay in the tree fully self-tested.
+
 ## Original to this project
 
 Written for this program, and GPLv3 along with the rest:

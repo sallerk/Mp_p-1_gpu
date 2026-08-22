@@ -203,6 +203,15 @@ bool loadConfig(const string& path, Config& cfg, string& err) {
       else { cfg.gcdThreads = u32(n); }
     } else if (key == "extend") {
       if (!parseBool(val, cfg.extend)) { return bad("must be 0/1"); }
+    } else if (key == "bounds_source") {
+      if      (lval == "auto")       { cfg.boundsSource = BOUNDS_AUTO; }
+      else if (lval == "assignment") { cfg.boundsSource = BOUNDS_ASSIGNMENT; }
+      else { return bad("must be auto or assignment"); }
+    } else if (key == "wait_for_work") {
+      if (!parseBool(val, cfg.waitForWork)) { return bad("must be 0/1"); }
+    } else if (key == "wait_poll_seconds") {
+      if (!parseNumber(val, n) || n == 0) { return bad("must be > 0"); }
+      cfg.waitPollSeconds = u32(n);
     } else if (key == "verify_fft") {
       if (!parseBool(val, cfg.verifyFft)) { return bad("must be 0/1"); }
     } else if (key == "pause_on_exit" || key == "pause") {

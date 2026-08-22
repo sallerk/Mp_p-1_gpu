@@ -15,7 +15,7 @@
 // change that alters what a result MEANS, so a submitted result can be traced
 // to the code that produced it.
 inline constexpr const char* PROGRAM_NAME = "Mp_p-1_gpu";
-inline constexpr const char* PROGRAM_VERSION = "1.7";
+inline constexpr const char* PROGRAM_VERSION = "1.8";
 
 // What to do with the console window when the program exits.
 //   AUTO   hold only when launched by double-click, i.e. when closing would
@@ -35,6 +35,18 @@ enum PauseMode { PAUSE_AUTO = 0, PAUSE_ALWAYS, PAUSE_NEVER };
 //                second stage there is nothing else to catch a near-miss, so it
 //                pays to push B1 harder.
 enum Stage2Mode { STAGE2_AUTO = 0, STAGE2_ON, STAGE2_OFF };
+
+// Whether a Pminus1= worktodo assignment's own B1/B2 are trusted, or this
+// program always computes its own regardless. See Bounds.h: its cost model
+// is measured against THIS implementation and hardware, unlike a value
+// PrimeNet assigned for its own (different) credit/economics model -- so
+// AUTO, trusting this program's own model, is the default.
+//   BOUNDS_AUTO        always compute B1/B2 here, ignore an assignment's own
+//                       even when present.
+//   BOUNDS_ASSIGNMENT  a Pminus1= line's B1/B2 are pinned and used as-is; a
+//                       Pfactor= line or a bare exponent has none to honor,
+//                       so it falls back to AUTO regardless of this setting.
+enum BoundsSource { BOUNDS_AUTO = 0, BOUNDS_ASSIGNMENT };
 
 struct Config {
   // p in M_p = 2^p - 1; must be prime. Populated per worktodo.txt entry by
@@ -101,6 +113,37 @@ struct Config {
   //   stage 2  a smaller completed B2's accumulator seeds this run, which then
   //            walks only (oldB2, newB2].
   bool extend = true;
+
+  int boundsSource = BOUNDS_AUTO;   // bounds_source = auto | assignment
+
+  // Instead of exiting when worktodo.txt is empty, wait and re-check it --
+  // for running unattended alongside AutoPrimeNet (github.com/tdulcet/
+  // AutoPrimeNet), which appends new Pfactor=/Pminus1= lines as it fetches
+  // assignments. Off by default: an empty queue exiting cleanly is what a
+  // script or a one-shot manual run expects.
+  bool waitForWork = false;         // wait_for_work = yes | no
+  u32 waitPollSeconds = 5;          // wait_poll_seconds
+
+  // ---- Populated per worktodo.txt entry by the driver, same precedent as
+  // exponent/factoredTo above -- NOT read from config.txt itself. Carries a
+  // Pfactor=/Pminus1= assignment's identity through to the job-start
+  // printout and writeResultJson(), so a submitted result can be matched
+  // back to the assignment that produced it and AutoPrimeNet's own upload
+  // step sees the known factors it expects. Empty/zero for a bare-exponent
+  // entry, or when the assignment simply omitted them.
+  std::string aid;
+  std::vector<std::string> knownFactors;
+  // Pfactor='s tests_saved: a GIMPS PRP-credit concept (PRP tests skipped if
+  // a factor turns up) with no equivalent in this program's own cost model --
+  // bias means "value of a factor vs. a composite result", not "tests
+  // saved" -- so this is carried through only to print as FYI, never fed
+  // into chooseBounds/choosePP1Bounds.
+  double testsSaved = 0;
+  // Pminus1='s optional B2_start (stage 2 already partly covered elsewhere)
+  // cannot be honored -- see Worktodo.h's WorktodoEntry::b2Start comment --
+  // so runOneJob prints one warning instead of silently ignoring it.
+  bool b2StartIgnored = false;
+  u64 ignoredB2Start = 0;
 };
 
 // Returns false and sets `err` on a malformed file.

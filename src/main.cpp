@@ -259,6 +259,11 @@ void usage() {
 //    "b2":60000000,"factors":["..."],"program":{"name":"...","version":"1.0"},
 //    "timestamp":"2026-07-28 17:29:54"}
 //
+// When the job came from a Pfactor=/Pminus1= worktodo entry (see Worktodo.h),
+// "aid" and "known-factors" are added the same way "user"/"computer" already
+// are -- present only when the assignment carried them, so AutoPrimeNet's own
+// upload step can match this line back to the assignment it came from.
+//
 // Only factors that are PRIME and verified to divide M_p are reported as
 // factors: a gcd routinely carries several multiplied together, and submitting
 // that product would be a composite masquerading as a factor. Anything that
@@ -286,6 +291,14 @@ void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
     fprintf(f, ",\"timestamp\":\"%s\"", stamp);
     if (!cfg.username.empty()) { fprintf(f, ",\"user\":\"%s\"", cfg.username.c_str()); }
     if (!cfg.computerName.empty()) { fprintf(f, ",\"computer\":\"%s\"", cfg.computerName.c_str()); }
+    if (!cfg.aid.empty()) { fprintf(f, ",\"aid\":\"%s\"", cfg.aid.c_str()); }
+    if (!cfg.knownFactors.empty()) {
+      fprintf(f, ",\"known-factors\":[");
+      for (size_t i = 0; i < cfg.knownFactors.size(); ++i) {
+        fprintf(f, "%s\"%s\"", i ? "," : "", cfg.knownFactors[i].c_str());
+      }
+      fprintf(f, "]");
+    }
   };
 
   std::vector<const FoundFactor*> good, bad;
@@ -472,10 +485,14 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // have to be settled before the FFT below is timed, let alone run.
   applyTunedOptions(*shared.args, cfg.exponent);
 
-  // Phase 3 (the gcd) is CPU-only; this is the knob that speeds it up.
+  // Phase 3 (the gcd) is CPU-only. gcd_threads no longer has anything to
+  // control for the default path: gcd() (Gcd.h) is GMP's mpz_gcd since 1.8,
+  // which is single-threaded and does not consult this program's thread
+  // pool. Still set, harmlessly, for gcdHalf's own self-tests and as the
+  // knob that would matter again if gcdHalf is ever reinstated as gcd()'s
+  // implementation -- see Gcd.h's file comment.
   setGcdThreads(cfg.gcdThreads);
-  printf("  gcd worker threads: %s\n",
-         cfg.gcdThreads ? std::to_string(cfg.gcdThreads).c_str() : "auto (all cores)");
+  printf("  gcd: GMP, single-threaded\n");
 
   // ---- FFT, then bounds ---------------------------------------------------
   // Order matters. The transform is chosen first because it fixes the size of
@@ -560,6 +577,17 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
 
   const bool anyRunStage2 = runStage2 || wantPp1Stage2;
   printf("  M%u, trial-factored to %u bits, bias %.1f\n", cfg.exponent, cfg.factoredTo, cfg.bias);
+  if (!cfg.aid.empty()) { printf("  AID %s\n", cfg.aid.c_str()); }
+  if (cfg.testsSaved > 0) {
+    printf("  assignment tests_saved = %.2f (informational only -- no equivalent\n"
+           "    in this program's own cost model)\n", cfg.testsSaved);
+  }
+  if (cfg.b2StartIgnored) {
+    printf("  WARNING: assignment specifies B2_start=%llu (stage 2 partially covered\n"
+           "    elsewhere) -- this program cannot import externally-computed stage-2\n"
+           "    progress, so it will walk the full (B1,B2] range. Safe (no missed\n"
+           "    factors), just not optimal.\n", (unsigned long long) cfg.ignoredB2Start);
+  }
   if (cfg.doPM1 && cfg.doPP1) {
     // Two different B1s now -- label which is which, the same way the
     // per-method sections below are already labelled.
@@ -897,6 +925,12 @@ static int runMain(int argc, char** argv) {
     // exponent does not inherit an earlier one's default.
     const u32 configuredFactoredTo = cfg.factoredTo;
 
+    // Same idea, for bounds_source = assignment: config.txt's own b1/b2 (0
+    // == auto unless the user set them) is what every entry falls back to
+    // once a Pminus1= entry's own assigned bounds are no longer in scope.
+    const u64 configuredB1 = cfg.b1;
+    const u64 configuredB2 = cfg.b2;
+
     // Peek at the next queued exponent WITHOUT consuming it, purely so
     // --bounds and --tune (which read cfg.exponent same as always) have
     // something to scope themselves to. The actual job loop below re-reads
@@ -1088,6 +1122,7 @@ static int runMain(int argc, char** argv) {
     // varies per entry. A job that throws is NOT caught here -- it propagates
     // to this function's own try/catch below, which stops the whole queue
     // (the entry stays queued, same as a single-exponent run failing today).
+    bool printedWaiting = false;
     for (;;) {
       std::vector<WorktodoEntry> entries;
       std::string werr;
@@ -1096,15 +1131,51 @@ static int runMain(int argc, char** argv) {
         return 2;
       }
       if (entries.empty()) {
-        printf("worktodo.txt is empty -- nothing to do. "
-               "Add an exponent, one per line, and run again.\n");
-        return 0;
+        if (!cfg.waitForWork) {
+          printf("worktodo.txt is empty -- nothing to do. "
+                 "Add an exponent, one per line, and run again.\n");
+          return 0;
+        }
+        // AutoPrimeNet (or a person) may still be about to append a line --
+        // wait_for_work trades the usual clean exit for sitting and
+        // rechecking, so an unattended run doesn't have to be relaunched by
+        // hand every time the queue runs dry.
+        if (!printedWaiting) {
+          printf("worktodo.txt is empty -- waiting for a new assignment "
+                 "(from AutoPrimeNet or by hand). Ctrl-C to stop.\n");
+          printedWaiting = true;
+        }
+        for (u32 waited = 0; waited < cfg.waitPollSeconds * 1000 && !gInterrupted.load(); waited += 250) {
+          Timer::usleep(250000);
+        }
+        if (gInterrupted.load()) { return 0; }   // ctrlHandler already printed
+        continue;
       }
+      printedWaiting = false;
 
       const WorktodoEntry job = entries.front();
       cfg.exponent = job.exponent;
       cfg.factoredTo = configuredFactoredTo ? configuredFactoredTo
+                      : job.hasFactoredTo   ? job.factoredTo
                                             : defaultFactoredTo(cfg.exponent);
+
+      // A Pminus1= entry's own B1/B2 are honored only when bounds_source =
+      // assignment says to trust them; either way, every entry starts from
+      // config.txt's own value (0 == auto unless the user pinned one) so an
+      // assigned-bounds entry can never leak its B1/B2 into the NEXT entry.
+      if (cfg.boundsSource == BOUNDS_ASSIGNMENT && job.hasAssignedBounds) {
+        cfg.b1 = job.assignedB1;
+        cfg.b2 = job.assignedB2;
+      } else {
+        cfg.b1 = configuredB1;
+        cfg.b2 = configuredB2;
+      }
+      cfg.aid = job.aid;
+      cfg.knownFactors = job.knownFactors;
+      cfg.testsSaved = job.testsSaved;
+      cfg.b2StartIgnored = job.b2Start != 0;
+      cfg.ignoredB2Start = job.b2Start;
+
       printf("\n=== M%u (%zu queued) ===\n\n", job.exponent, entries.size());
 
       const int rc = runOneJob(cfg, shared, queue, fftSpec, deviceOverride);

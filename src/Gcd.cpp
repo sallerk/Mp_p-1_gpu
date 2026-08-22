@@ -16,6 +16,8 @@
 #include "Parallel.h"
 #include "timeutil.h"
 
+#include <gmp.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -241,6 +243,17 @@ Nat timedMod(const Nat& a, const Nat& b) {
 // m1 applied first, then m2. Derived by substituting
 //   a1 = A1*a - B1*b, b1 = D1*b - C1*a
 // into m2's formulas; every coefficient comes out non-negative.
+//
+// Tried and reverted: composing via Strassen's 7-multiply 2x2 matrix product
+// (a genuinely different trick than the Toom-style polynomial evaluation in
+// BigInt.cpp) instead of the schoolbook 8 below. It was correct -- verified
+// differentially against this version at every existing gcdHalf==gcdLehmer
+// check -- but measured SLOWER end to end at every size tested, worse than
+// the multiply it removed: +9% at 1.29M limbs, +26% at 2000. The extra SNat
+// bookkeeping (8 signed sums building the 7 products' operands, 4 more
+// combining them back, plus copying all 8 matrix entries into signed form)
+// cost more than the multiply saved -- the same shape of lesson this file's
+// TOOM4_LIMBS comment already recorded once for Toom-4 vs Toom-3.
 Mat matCompose(const Mat& m1, const Mat& m2) {
   Nat t[8];
   const bool big = m1.A.size() + m2.A.size() >= PARALLEL_MIN_LIMBS;
@@ -409,4 +422,60 @@ Nat gcdHalf(Nat a, Nat b) {
     }
   }
   return gcdLehmer(a, b);
+}
+
+// ===========================================================================
+// GMP-backed gcd -- the actual production entry point (see gcd() in Gcd.h).
+// ===========================================================================
+//
+// Measured against gcdHalf at the exact scale gcd(x-1, 2^p-1) runs at
+// (p ~ 82.5M, 1,290,468 limbs): GMP's mpz_gcd finished in 12.5s, single
+// threaded, against gcdHalf's 133-141s across up to 20 threads. Same
+// algorithm family underneath -- GMP's own gcd is Lehmer plus a subquadratic
+// HGCD, nothing conceptually different from what is above in this file --
+// the entire gap is implementation quality: GMP's multiply routines are
+// hand-tuned assembly with an FFT tier this file has no equivalent of (see
+// BigInt.cpp's TOOM4_LIMBS comment: Toom-4 is this file's ceiling). Rather
+// than chase that gap by hand, this delegates to it directly.
+//
+// gcdEuclid/gcdLehmer/gcdHalf above are NOT dead code: gcdHalf is still
+// gcd()'s only tested alternative if this ever needs to be reverted, and
+// gcdLehmer/gcdEuclid remain gcdHalf's own correctness oracle. Their
+// self-tests are unchanged; a new differential section checks gcdGmp against
+// gcdHalf the same way every other tier in this codebase is cross-checked.
+//
+// Interruptibility: gGcdProgress/GcdAborted (above) have no equivalent here
+// -- mpz_gcd is a single opaque call with no progress callback, so nothing
+// can throw GcdAborted mid-computation the way gcdHalf's recursion can. This
+// is a real, deliberate reduction in what Ctrl-C can interrupt (see Gcd.h's
+// long comment on gGcdProgress for why that mechanism was built at all), but
+// the window it gives up is now at most the ~12s production-scale figure
+// above, not gcdHalf's ~140s -- the fix for the problem gGcdProgress solved
+// got 11x smaller as a side effect of this change. PM1.cpp's gcdWithProgress
+// checks gInterrupted immediately before calling gcd() so a Ctrl-C that
+// landed just before this call still takes effect; one already in flight
+// runs to completion.
+Nat gcdGmp(const Nat& a, const Nat& b) {
+  mpz_t x, y, g;
+  mpz_inits(x, y, g, nullptr);
+  // order=-1 (least significant word first), size=8 bytes, endian=0 (native
+  // word endianness), nails=0 (no unused bits per word) -- exactly Nat::w's
+  // own representation, so this is a straight bulk copy, not a conversion
+  // loop.
+  mpz_import(x, a.size(), -1, sizeof(u64), 0, 0, a.w.data());
+  mpz_import(y, b.size(), -1, sizeof(u64), 0, 0, b.w.data());
+
+  mpz_gcd(g, x, y);
+
+  Nat r;
+  if (mpz_sgn(g) != 0) {
+    r.w.resize((mpz_sizeinbase(g, 2) + 63) / 64);
+    size_t wordsWritten = 0;
+    mpz_export(r.w.data(), &wordsWritten, -1, sizeof(u64), 0, 0, g);
+    r.w.resize(wordsWritten);
+  }
+  r.norm();
+
+  mpz_clears(x, y, g, nullptr);
+  return r;
 }

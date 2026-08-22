@@ -19,7 +19,7 @@
 void setParallelThreads(unsigned n);
 
 // Operands smaller than this are not worth a thread hand-off.
-inline constexpr size_t PARALLEL_MIN_LIMBS = 2000;
+inline constexpr size_t PARALLEL_MIN_LIMBS = 500;
 
 // Runs `tasks` across worker threads if `worthIt` and the global budget has
 // room, otherwise runs them inline on the calling thread. The caller's own

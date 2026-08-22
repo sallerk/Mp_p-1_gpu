@@ -28,6 +28,12 @@ if not defined VCVARS (
     exit /b 1
 )
 
+rem  Captured before vcvars64.bat runs: it sets its own VCPKG_ROOT
+rem  (pointing at the vcpkg bundled with Visual Studio itself), unconditionally
+rem  overwriting anything already in the environment. An explicit override set
+rem  before calling build.bat is kept here so it still wins.
+set "USER_VCPKG_ROOT=%VCPKG_ROOT%"
+
 echo Using %VCVARS%
 call "%VCVARS%" >nul 2>nul
 if errorlevel 1 ( echo ERROR: vcvars64 failed & exit /b 1 )
@@ -40,6 +46,37 @@ if not errorlevel 1 (
 ) else (
     echo Skipping bundle regeneration ^(python not found^); using existing src\bundle.cpp
 )
+
+rem --- locate GMP (vcpkg, x64-windows-static triplet) -------------------------
+rem  Added in 1.8: Gcd.cpp's gcdGmp delegates the production gcd(x-1,2^p-1)
+rem  call to GMP's mpz_gcd -- ~11x faster than this project's own hand-rolled
+rem  gcdHalf at production scale (see gcdGmp's own comment in Gcd.cpp for the
+rem  numbers). Statically linked (x64-windows-static triplet), so there is no
+rem  DLL to ship -- Mp_p-1_gpu.exe stays the single file every prior release
+rem  was. Detected the same way vcvars64.bat is above: use what is already
+rem  installed, fail with setup instructions if not -- this is not
+rem  auto-installed, the same as Visual Studio itself is not. Three places
+rem  are checked, in order: an explicit override (USER_VCPKG_ROOT, captured
+rem  above), the vcpkg bundled with Visual Studio itself (VCVARS just set
+rem  VCPKG_ROOT to it -- every machine that can already run this script has
+rem  one, nothing extra to install to get vcpkg itself), and a vcpkg folder
+rem  placed next to this project.
+set "VCPKG_DIR="
+if defined USER_VCPKG_ROOT if exist "%USER_VCPKG_ROOT%\installed\x64-windows-static\include\gmp.h" set "VCPKG_DIR=%USER_VCPKG_ROOT%"
+if not defined VCPKG_DIR if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\installed\x64-windows-static\include\gmp.h" set "VCPKG_DIR=%VCPKG_ROOT%"
+if not defined VCPKG_DIR if exist "%~dp0vcpkg\installed\x64-windows-static\include\gmp.h" set "VCPKG_DIR=%~dp0vcpkg"
+if not defined VCPKG_DIR (
+    echo ERROR: GMP not found. Mp_p-1_gpu links GMP ^(x64-windows-static^) for its gcd step.
+    echo        Install it once using the vcpkg that ships with Visual Studio:
+    echo            "%VCPKG_ROOT%\vcpkg.exe" install gmp:x64-windows-static
+    echo        ^(if that path doesn't exist, clone https://github.com/microsoft/vcpkg,
+    echo        run bootstrap-vcpkg.bat, then vcpkg install gmp:x64-windows-static,
+    echo        and either set VCPKG_ROOT to that folder or place it at
+    echo        %~dp0vcpkg^)
+    exit /b 1
+)
+set "GMP_INC=%VCPKG_DIR%\installed\x64-windows-static\include"
+set "GMP_LIB=%VCPKG_DIR%\installed\x64-windows-static\lib\gmp.lib"
 
 if not exist build mkdir build
 
@@ -98,7 +135,7 @@ rem  No /Isrc: Windows include lookup is case-insensitive, so putting src\ on th
 rem  include path makes the CRT's <csignal> -> <signal.h> resolve to our own
 rem  src\Signal.h. Quoted includes already search the including file's directory.
 cl /nologo /O2 /EHsc /std:c++20 /MT /W3 /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
-   /Fe:Mp_p-1_gpu.exe /Fo:build\ %SRCS%
+   /I"%GMP_INC%" /Fe:Mp_p-1_gpu.exe /Fo:build\ %SRCS% "%GMP_LIB%"
 if errorlevel 1 ( echo. & echo BUILD FAILED & exit /b 1 )
 
 echo.

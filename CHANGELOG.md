@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.8
+
+**worktodo.txt now accepts `Pfactor=`/`Pminus1=` assignment lines, the shape
+AutoPrimeNet (github.com/tdulcet/AutoPrimeNet, successor to gpuowl's
+`primenet.py`) and Prime95 itself write.** This program still never talks to
+PrimeNet -- no networking of any kind was added -- but it can now sit in the
+same directory as AutoPrimeNet and read/write the same two files. A bare
+exponent line still works exactly as before; a `Pfactor=`/`Pminus1=` line
+additionally carries its own k,b,n,c (validated as a Mersenne number: k=1,
+b=2, c=-1), an optional assignment ID, and optional known factors, all
+verified against Prime95's own C parser (`commonc.c`'s `parseWorkToDoLine`)
+rather than assumed. The assignment ID and known factors are echoed back into
+`results.txt` as `"aid"`/`"known-factors"`, matching Prime95's own submission
+JSON keys, so AutoPrimeNet's upload step stays consistent with what PrimeNet
+expects back.
+
+**New config.txt key, `bounds_source = auto | assignment`.** A `Pminus1=`
+line carries its own B1/B2, chosen by PrimeNet for its own credit/economics,
+not this program's cost model. `auto` (default) ignores that and always
+computes fresh bounds, same as a bare exponent -- this program's bounds model
+is measured against its own hardware and implementation (see `Bounds.h`), so
+trusting it by default is the same call this project has made before, not a
+new one. `assignment` pins `Pminus1=`'s own B1/B2 instead.
+
+A `Pfactor=`'s `how_far_factored`/`Pminus1=`'s `sieve_depth` now feeds
+`factored_to`'s existing auto-default (an explicit `factored_to=` in
+config.txt still wins over either). `Pfactor=`'s `tests_saved` is parsed and
+printed as FYI only -- it is a GIMPS PRP-credit concept with no equivalent in
+this program's own cost model (`bias` means "value of a factor vs. a
+composite result," not "tests saved"), so no heuristic maps it into `bias`.
+
+**`Pminus1=`'s optional `B2_start` (stage 2 already partly covered
+elsewhere) is parsed but not honored.** The existing `extend` reuse path
+needs a local checkpoint whose exponent/B1/residue all match -- there is no
+local artifact to seed an externally declared `B2_start` with. A job
+carrying one now prints a clear warning and walks the full `(B1,B2]` range:
+always correct, just not optimal. Out of scope for the same reason: using an
+assignment's known factors to work against the cofactor rather than `M_p`
+directly -- that is a real numeric-algorithm change, not a parsing one.
+
+**New config.txt key, `wait_for_work = yes | no` (plus `wait_poll_seconds`,
+default 5).** Off by default, preserving the existing "empty queue exits
+cleanly" behavior a script or a one-shot run expects. On, an empty
+worktodo.txt is rechecked on an interval instead of exiting -- for running
+unattended alongside AutoPrimeNet, so a queue that runs dry for a moment
+doesn't need a relaunch by hand. Ctrl-C during the wait exits the same clean
+way an empty queue always has.
+
+**The production gcd(x-1, 2^p-1) call now runs through GMP instead of this
+project's own hand-rolled half-GCD.** Measured at the exact scale this call
+runs at in a real run (p ~ 82.5M, 1,290,468 limbs): GMP's `mpz_gcd` finished
+in 12.5s, single-threaded, against the previous implementation's 133-141s
+across up to 20 threads -- an ~11x wall-clock win, over 200x per core. Same
+algorithm family underneath (Lehmer plus a subquadratic HGCD, same idea as
+this project's own `gcdHalf`); the gap is entirely GMP's hand-tuned assembly
+multiply, including an FFT tier this project has no equivalent of. Statically
+linked (`x64-windows-static` via vcpkg -- see `build.bat`), so `Mp_p-1_gpu.exe`
+stays the single file every prior release was; no DLL is shipped. GMP is
+GPLv3-compatible (LGPLv3+/GPLv2+, licensee's choice; see `ATTRIBUTION.md`) --
+Mp_p-1_gpu is already GPLv3 in full. One real trade-off: `mpz_gcd` has no
+progress callback, so unlike the previous implementation this specific call
+can no longer be interrupted once started -- Ctrl-C is still honored
+immediately before it starts, so the uninterruptible window shrank from
+gcdHalf's ~140s worst case to gcdGmp's ~12s, rather than being eliminated.
+The previous implementation (`gcdHalf`, `gcdLehmer`, `gcdEuclid` in `Gcd.cpp`)
+is untouched and still fully self-tested as the reversion path if this is
+ever pulled.
+
 ## 1.7
 
 **Stage 2's `T_j` table is built by a recurrence instead of an exponentiation

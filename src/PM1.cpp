@@ -73,45 +73,23 @@ static Nat gcdWithProgress(const Nat& v, const Nat& Mp, u32 phase, const char* w
   }
   Timer gcdTimer;
 
-  Timer gcdReport;
-  double gcdLast = -1e9;
-  // Installed unconditionally, not just when showProgress -- the interrupt
-  // check below must run regardless of whether the progress LINE prints.
-  gGcdProgress = [&](size_t bitsNow, size_t bitsStart, u64 muls) -> bool {
-    if (gInterrupted.load()) { return false; }
-    if (!showProgress) { return true; }
-    const double el = gcdReport.at();
-    const bool tty = stdoutIsTerminal();
-    // The hook fires after every batch of multiplications, far too often to
-    // print, so throttle by wall time instead.
-    if (el - gcdLast < (tty ? 1.0 : 60.0)) { return true; }
-    gcdLast = el;
-    // Weight by work, not by bits. The top-level operand HALVES each step, so
-    // a bits-linear percentage reads 0 / 50 / 75 with wildly uneven timing
-    // between steps. (n/N)^1.39 follows the measured cost curve, putting the
-    // bit-halfway point at ~62% done. The multiply counter climbs smoothly
-    // regardless, so the line always visibly moves.
-    const double frac = bitsStart
-        ? 1.0 - pow(double(bitsNow) / double(bitsStart), GCD_WORK_EXPONENT) : 0.0;
-    const double eta = frac > 0.02 ? el * (1.0 - frac) / frac : 0.0;
-    printf(tty ? "\r  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  "
-                 "elapsed %s  ETA %s   "
-               : "  [%s gcd CPU] %5.1f%%  %llu muls  %zu bits left  "
-                 "elapsed %s  ETA %s\n",
-           ph(phase), frac * 100, (unsigned long long) muls, bitsNow,
-           fmtDuration(el).c_str(), fmtDuration(eta).c_str());
-    fflush(stdout);
-    return true;
-  };
-
+  // gcd() is gcdGmp now (see Gcd.h's file comment) -- a single opaque call
+  // with no progress callback, so there is no per-tick ETA line to show
+  // (showProgress no longer has anything to gate here; it still reaches this
+  // function because callers thread it through for their own other prints)
+  // and no way to throw GcdAborted out of a call already in flight. The best
+  // available check is immediately before the call: if Ctrl-C landed while
+  // this phase was starting up, honor it before spending gcdGmp's ~12s
+  // production-scale worst case on an answer that will be thrown away
+  // anyway. See gcdGmp's comment in Gcd.cpp for why that worst case is small
+  // enough now that running one already-started call to completion is an
+  // acceptable trade.
   Nat g;
-  try {
-    g = v.isZero() ? Mp : gcd(v, Mp);
-  } catch (const GcdAborted&) {
+  if (gInterrupted.load()) {
     interrupted = true;
+  } else {
+    g = v.isZero() ? Mp : gcd(v, Mp);
   }
-  gGcdProgress = nullptr;
-  if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 100, ""); }
 
   secsOut = gcdTimer.at();
   if (announce) {

@@ -2,16 +2,28 @@
 //
 // gcd for the P-1/P+1 factor extraction step: gcd(x-1, 2^p-1) with p > 1e8.
 //
-// Two implementations on purpose:
+// Four implementations, each the oracle for the one below it:
 //
-//   gcdEuclid  -- textbook, one division per step. Slow, but small enough to be
-//                 read and believed. Used as the oracle in the tests.
+//   gcdEuclid  -- textbook, one division per step. Slow, but small enough to
+//                 be read and believed. The oracle every other tier is
+//                 checked against, directly or transitively.
 //   gcdLehmer  -- does ~64 bits of reduction per O(n) pass using only the top
-//                 limbs. Same asymptotics as Euclid but a much better constant;
-//                 this is what runs today.
+//                 limbs. Same asymptotics as Euclid but a much better
+//                 constant; gcdHalf's own base case and fallback.
+//   gcdHalf    -- subquadratic recursive half-GCD (Schoenhage). O(M(n) log n)
+//                 instead of O(n^2); this file's own hand-rolled ceiling
+//                 (BigInt.cpp's multiply tops out at Toom-4).
+//   gcdGmp     -- delegates to GMP's mpz_gcd. Same algorithm family as
+//                 gcdHalf underneath (Lehmer + subquadratic HGCD), but GMP's
+//                 hand-tuned assembly multiply (including an FFT tier this
+//                 file has none of) measured ~11x faster at production scale
+//                 -- see gcdGmp's own comment in Gcd.cpp for the numbers and
+//                 what is given up (mid-computation interruptibility) to get
+//                 them. This is gcd()'s actual implementation below.
 //
-// A subquadratic half-GCD is the next step; it will be differentially tested
-// against gcdLehmer before replacing it.
+// gcdHalf is not dead code for having been superseded as the production
+// path: it stays fully self-tested as the reversion path if gcdGmp is ever
+// pulled, and gcdLehmer/gcdEuclid remain its own correctness oracle.
 
 #pragma once
 
@@ -30,9 +42,13 @@ extern std::atomic<u64> gMulNanos, gDivNanos;
 
 // Subquadratic: recursive half-GCD (Schoenhage). Reduces the operands by half
 // their length per level using only their leading bits, so the cost is
-// O(M(n) log n) instead of O(n^2). This is the one that makes gcd(x-1, 2^p-1)
-// practical at p > 1e8.
+// O(M(n) log n) instead of O(n^2). No longer gcd()'s implementation (see the
+// file comment above) but kept fully live as the reversion path.
 Nat gcdHalf(Nat a, Nat b);
+
+// GMP-backed. gcd()'s actual implementation -- see the file comment above
+// and this function's own comment in Gcd.cpp.
+Nat gcdGmp(const Nat& a, const Nat& b);
 
 // Optional progress hook. Called frequently -- after each batch of large
 // multiplications, not merely once per halving -- with:
@@ -54,16 +70,24 @@ Nat gcdHalf(Nat a, Nat b);
 // Return false to abort: gcdHalf throws GcdAborted from the next call site it
 // reaches, on the SAME thread (each thread's hook only ever sees that
 // thread's own gcd, so the throw unwinds a normal single-thread call chain
-// even with two gcds concurrently in flight). This is the ONLY way to stop a
-// gcd early -- there is no partial result and no checkpoint format for one.
-// Before this existed, the gcd phases were the only part of a run Ctrl-C
-// could not stop: a full gcd is minutes, the GPU phases already checked an
-// equivalent hook every reportEvery iterations, and a request to stop mid-gcd
-// was silently ignored until it finished on its own -- at which point the job
-// looked like it had completed normally and (with a stage 2 configured) got
-// removed from worktodo.txt without ever writing a result. See PM1.cpp's
-// gcdWithProgress for where this is wired to the real interrupt flag, and
-// main.cpp's finishStage1Gcd for the overlapped background gcd's own join.
+// even with two gcds concurrently in flight). Before this existed, the gcd
+// phases were the only part of a run Ctrl-C could not stop: a full gcd is
+// minutes, the GPU phases already checked an equivalent hook every
+// reportEvery iterations, and a request to stop mid-gcd was silently ignored
+// until it finished on its own -- at which point the job looked like it had
+// completed normally and (with a stage 2 configured) got removed from
+// worktodo.txt without ever writing a result.
+//
+// gcdGmp (gcd()'s actual implementation, see the file comment above) has no
+// equivalent: mpz_gcd is one opaque call with no progress callback, so
+// nothing can throw GcdAborted out of it. PM1.cpp's gcdWithProgress checks
+// gInterrupted itself immediately before calling gcd() instead, so a Ctrl-C
+// that lands before the call still takes effect; one already in flight now
+// runs to completion, capped at gcdGmp's own measured worst case (~12s at
+// production scale) rather than gcdHalf's (~140s) -- see gcdGmp's comment in
+// Gcd.cpp. This hook and GcdAborted remain fully live for anything that
+// calls gcdHalf directly (its own self-tests do). See main.cpp's
+// finishStage1Gcd for the overlapped background gcd's own join.
 extern thread_local std::function<bool(size_t bitsNow, size_t bitsStart, u64 muls)> gGcdProgress;
 
 // Thrown by gcdHalf (via the tick() and top-of-loop call sites) when
@@ -84,4 +108,4 @@ inline constexpr double GCD_WORK_EXPONENT = 1.39;
 // 0 restores the default (all hardware threads).
 void setGcdThreads(unsigned n);
 
-inline Nat gcd(const Nat& a, const Nat& b) { return gcdHalf(a, b); }
+inline Nat gcd(const Nat& a, const Nat& b) { return gcdGmp(a, b); }

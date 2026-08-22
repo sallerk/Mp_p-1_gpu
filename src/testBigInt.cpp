@@ -253,6 +253,37 @@ int runBigIntTests() {
     check(gcdHalf(a, b) == gcdLehmer(a, b), "gcdHalf == gcdLehmer (planted, large)");
   }
 
+  // --- GMP-backed gcd: correctness against the trusted gcdHalf --------------
+  // gcd() (Gcd.h) is gcdGmp now, not gcdHalf -- this is what actually runs in
+  // production, so it gets the same differential treatment gcdHalf got
+  // against gcdLehmer above, plus a check that gcd() itself really does
+  // dispatch to gcdGmp (guards against Gcd.h's inline wrapper silently
+  // drifting back to gcdHalf in a future edit).
+  printf("\n  gcdGmp vs gcdHalf (differential)\n");
+  for (int t = 0; t < 300; ++t) {
+    size_t la = 1 + rng.next() % 400, lb = 1 + rng.next() % 400;
+    Nat a = randomNat(rng, la), b = randomNat(rng, lb);
+    if (a.isZero() || b.isZero()) { continue; }
+    check(gcdGmp(a, b) == gcdHalf(a, b), "gcdGmp == gcdHalf");
+  }
+  for (auto& pr : pairs) {
+    Nat a = mersenne(pr[0]), b = mersenne(pr[1]);
+    Nat want = mersenne(gcdU32(pr[0], pr[1]));
+    check(gcdGmp(a, b) == want, "gcdGmp mersenne " + to_string(pr[0]) + "," + to_string(pr[1]));
+  }
+  for (int t = 0; t < 10; ++t) {
+    Nat g = randomNat(rng, 200 + rng.next() % 100);
+    Nat x = randomNat(rng, 500 + rng.next() % 300);
+    Nat y = randomNat(rng, 500 + rng.next() % 300);
+    if (g.isZero() || x.isZero() || y.isZero()) { continue; }
+    Nat a = mul(g, x), b = mul(g, y);
+    check(gcdGmp(a, b) == gcdHalf(a, b), "gcdGmp == gcdHalf (planted, large)");
+  }
+  {
+    Nat a = mersenne(pairs[0][0]), b = mersenne(pairs[0][1]);
+    check(gcd(a, b) == gcdGmp(a, b), "gcd() dispatches to gcdGmp");
+  }
+
   // --- half-GCD: does gGcdProgress returning false actually abort it? ------
   // Real bug this guards: gGcdProgress used to be void-returning, so nothing
   // in gcdHalf could ever be told to stop -- Ctrl-C during a gcd (the
