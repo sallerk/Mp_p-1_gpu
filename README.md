@@ -38,25 +38,29 @@ Full P-1 runs (stage 1 to B1, stage 2 to B2) at five exponents, same GPU
 (NVIDIA RTX 3070), same bounds throughout (B1=100,000, B2=2,000,000). No
 checkpoint, no tuning cache. 1.8's M82589933 row is two runs agreeing within
 2%; every other row is a single clean run in a fresh sandbox with no
-tune.txt/fft-verified.txt carried over from any other run (see the note
-below the table for what that trades off). M100003573 was measured on
-1.8.1, not 1.8 -- functionally identical here, since nothing 1.8.1 changed
-touches stage 1, stage 2, or the default gcd path.
+tune.txt/fft-verified.txt/checkpoint carried over from any other run. Every
+PrMers `setup` figure is wall-clock total minus PrMers's own two reported
+`Elapsed time` figures (stage 1, stage 2) -- it isn't printed directly, so
+this needed timing the process from the outside, and is why it took a
+second pass to fill in: the first pass only recorded PrMers's own numbers.
+M100003573 was measured on 1.8.1, not 1.8 -- functionally identical here,
+since nothing 1.8.1 changed touches stage 1, stage 2, or the default gcd
+path.
 
 | tool | version | setup | stage 1 | stage 2 | final gcd | **total** | vs 1.8 |
 |---|---|--:|--:|--:|--:|--:|--:|
 | **M25964951** (~26M) | | | | | | | |
 | **Mp_p-1_gpu** | 1.8 | 19s | 40s | 47s | 3s | **1m50s** | **1.00x** |
 | Mp_p-1_gpu | 1.7 | 19s | 41s | 46s | 41s | 2m28s | 1.35x |
-| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | — | 1m03s | 1m38s | *(in stage)* | 2m41s | 1.46x |
+| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 19s | 1m01s | 1m35s | *(in stage)* | 2m55s | 1.59x |
 | **M43112609** (~43M) | | | | | | | |
 | **Mp_p-1_gpu** | 1.8 | 18s | 1m09s | 1m22s | 6s | **2m55s** | **1.00x** |
 | Mp_p-1_gpu | 1.7 | 17s | 1m10s | 1m25s | 1m19s | 4m11s | 1.43x |
-| PrMers | v99.95 | — | 1m38s | 2m26s | *(in stage)* | 4m05s | 1.40x |
+| PrMers | v99.95 | 32s | 1m42s | 2m33s | *(in stage)* | 4m47s | 1.64x |
 | **M57885161** (~58M) | | | | | | | |
 | **Mp_p-1_gpu** | 1.8 | 20s | 1m34s | 2m14s | 8s | **4m18s** | **1.00x** |
 | Mp_p-1_gpu | 1.7 | 20s | 1m34s | 2m11s | 2m09s | 6m14s | 1.45x |
-| PrMers | v99.95 | — | 3m15s | 4m57s | *(in stage)* | 8m12s | 1.91x |
+| PrMers | v99.95 | 49s | 3m12s | 4m46s | *(in stage)* | 8m47s | 2.04x |
 | **M82589933** (~83M) | | | | | | | |
 | **Mp_p-1_gpu** | 1.8 | 22s | 1m35s | 2m09s | 12s | **4m19s** | **1.00x** |
 | Mp_p-1_gpu | 1.7 | 26s | 1m36s | 2m11s | 3m03s | 7m16s | 1.68x |
@@ -65,7 +69,7 @@ touches stage 1, stage 2, or the default gcd path.
 | **M100003573** (~100M) | | | | | | | |
 | **Mp_p-1_gpu** | 1.8.1 | 16s | 2m05s | 2m49s | 16s | **5m28s** | **1.00x** |
 | Mp_p-1_gpu | 1.7 | 16s | 2m11s | 2m57s | 3m57s | 9m22s | 1.71x |
-| PrMers | v99.95 | — | 4m05s | 6m14s | *(in stage)* | 10m19s | 1.89x |
+| PrMers | v99.95 | 1m20s | 3m53s | 5m58s | *(in stage)* | 11m12s | 2.05x |
 
 **The gap is the gcd, and it grows with the exponent.** 1.8/1.8.1's stage
 1/stage 2 match 1.7's to within a couple of seconds at every size -- both
@@ -80,20 +84,21 @@ nothing about correctness; PrMers's own res64 isn't directly comparable
 (different stage-2 construction -- see below) but its found/not-found
 verdict matched at every exponent all three tools were run at.
 
-**PrMers's gap trends the same way, on its side, but noisier.** Its own gcd
-is folded into the stage figures above (marked *in stage*) rather than
-broken out. Across the five exponents it ranges 1.40x-2.18x and trends
-upward with size overall, but not monotonically -- M100003573's 1.89x sits
-below M82589933's 2.18x despite being the larger exponent, so treat this as
-a real but noisier trend than 1.7's, not a clean law. PrMers's `setup`
-column is only populated at M82589933, carried over from an earlier, more
-tightly controlled measurement (two runs per tool, agreed within 10%,
-PrMers's own startup isolated from its stage-1 gcd); the other four
-exponents were each measured once, so PrMers's setup there is folded into
-its `stage 1` figure instead of broken out -- a `—` means "not isolated
-this time", not "zero". gpuowl has no P-1 task type in this build (checked
-against its own `Worktodo.cpp` parser), so it appears only at M82589933, as
-a non-comparison rather than a fourth contender.
+**PrMers's gap trends the same way, on its side, once its setup is counted
+consistently.** Its own gcd is folded into the stage figures above (marked
+*in stage*) rather than broken out. Across the five exponents it ranges
+1.59x-2.18x and climbs with size almost monotonically, dipping only at the
+very largest exponent (2.18x at 82.6M vs 2.05x at 100M) -- close enough to
+be within run-to-run noise rather than a real reversal. This is a
+materially cleaner trend than an earlier pass of this table showed, because
+that pass only had PrMers's `setup` isolated at one exponent (M82589933)
+and folded it into `stage 1` everywhere else, silently *undercounting*
+PrMers's total at four of the five points. Backfilling `setup` for those
+four (by timing the process wall-to-wall and subtracting PrMers's own two
+reported elapsed figures) raised every one of those totals and brought the
+trend in line with 1.7's. gpuowl has no P-1 task type in this build
+(checked against its own `Worktodo.cpp` parser), so it appears only at
+M82589933, as a non-comparison rather than a fourth contender.
 
 Full methodology, PrMers's V-trace stage 2, and older-version numbers are in
 [MANUAL.md](MANUAL.md) and [CHANGELOG.md](CHANGELOG.md).
