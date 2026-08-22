@@ -61,6 +61,16 @@ pp1_seeds = 3
 # ---------------------------------------------------------------------------
 b1 = auto
 
+# B2, the stage-2 bound. 'auto' lets the model pick it alongside B1; expect
+# something like 30x B1. Ignored (and rejected as a contradiction) if stages = 1
+# (see WHICH STAGES TO RUN, below).
+#
+# Raising b2 after a stage 2 has finished walks only the new range, so working an
+# exponent upwards in steps costs the same as going straight to the final bound.
+# Note that `auto` does NOT know what is already on disk -- if you are stepping
+# bounds up deliberately, set b2 explicitly.
+b2 = auto
+
 
 # ---------------------------------------------------------------------------
 #  HOW FAR THE EXPONENT HAS ALREADY BEEN TRIAL FACTORED, in bits.
@@ -269,15 +279,6 @@ bounds_tolerance = 0.05
 #  are separate precisely so that neither reads backwards.
 # ---------------------------------------------------------------------------
 stages = auto
-
-# B2, the stage-2 bound. 'auto' lets the model pick it alongside B1; expect
-# something like 30x B1. Ignored (and rejected as a contradiction) if stages = 1.
-#
-# Raising b2 after a stage 2 has finished walks only the new range, so working an
-# exponent upwards in steps costs the same as going straight to the final bound.
-# Note that `auto` does NOT know what is already on disk -- if you are stepping
-# bounds up deliberately, set b2 explicitly.
-b2 = auto
 
 # ---------------------------------------------------------------------------
 #  STAGE-2 PAIRING SHAPE.  Leave both on auto unless you are experimenting.
