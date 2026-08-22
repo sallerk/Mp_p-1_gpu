@@ -80,14 +80,23 @@ struct Config {
   std::string computerName;
   bool checkpoint = true;
   std::string checkpointFile;   // "" == checkpoint_<exponent>.txt
-  u32 checkpointSeconds = 300;
+  // How often stage 1's squaring ladder and stage 2's pairing walk save
+  // their progress, in seconds (converted to a squaring/mul count at the
+  // measured rate -- see PM1.cpp's saveEverySquarings/saveEvery). Nothing to
+  // do with the gcd: that phase is a single call with no intermediate state
+  // to checkpoint, so an interrupted gcd always restarts from its beginning
+  // regardless of this setting.
+  u32 checkpointSeconds = 90;
 
   u32 reportEvery = 1000;       // squarings between progress updates
   int pauseMode = PAUSE_AUTO;   // hold the window open at exit
 
-  // Worker threads for the stage-1 gcd (phase 3). 0 == every hardware thread.
-  // The gcd is CPU-only; the GPU is idle throughout, so this is the one knob
-  // that speeds that phase up.
+  // Worker threads for gcdHalf, this project's own half-GCD. 0 == every
+  // hardware thread. VESTIGIAL for the default gcd since 1.8: the
+  // production gcd(x-1, M_p) call runs through GMP's mpz_gcd instead, which
+  // is single-threaded and ignores this entirely (see Gcd.cpp's gcdGmp).
+  // Still consulted if gcdHalf is ever reinstated as the default -- kept
+  // live and self-tested as that reversion path, not dead code.
   u32 gcdThreads = 0;
 
   // Check the chosen FFT actually computes correctly before committing hours

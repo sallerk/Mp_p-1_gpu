@@ -139,6 +139,19 @@ report_every = 1000
 
 
 # ---------------------------------------------------------------------------
+#  HOW OFTEN TO SAVE PROGRESS, in seconds -- stage 1's squaring ladder and
+#  stage 2's pairing walk only; converted to a squaring/mul count internally
+#  at the measured rate, so the exact number of seconds between saves varies
+#  a little. Lets Ctrl-C or a crash resume from nearby instead of from
+#  scratch. NOT the gcd: that phase is one single call with no intermediate
+#  state to checkpoint, so an interrupted gcd always restarts from its
+#  beginning regardless of this setting -- at GMP's ~12s worst case (see
+#  gcd_threads below for why it's GMP by default), that is not much to redo.
+# ---------------------------------------------------------------------------
+checkpoint_seconds = 90
+
+
+# ---------------------------------------------------------------------------
 #  CPU THREADS FOR PHASE 3 (the gcd).
 #
 #  VESTIGIAL SINCE 1.8 for the default gcd. The production gcd(x-1, M_p) call
@@ -152,8 +165,6 @@ report_every = 1000
 #  ready to matter again without edits, should that ever happen.
 # ---------------------------------------------------------------------------
 gcd_threads = 8
-
-checkpoint_seconds = 300
 
 
 # ---------------------------------------------------------------------------

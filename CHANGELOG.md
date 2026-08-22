@@ -53,6 +53,14 @@ PrimeNet already chose B1/B2 (`Pminus1=`) or the client computes its own
 from `how_far_factored`/`tests_saved` (`Pfactor=` -- the same role this
 program's own `factored_to`/`bias` already play for `auto`).
 
+**`checkpoint_seconds` was mislabeled the same way, more seriously: it sat
+directly under the "CPU THREADS FOR PHASE 3 (the gcd)" heading with no
+comment of its own**, making it look like it checkpoints the gcd, which it
+cannot -- that phase is one opaque call with no intermediate state to save.
+It actually governs stage 1's squaring ladder and stage 2's pairing walk
+only. Given its own heading now, saying so. Also lowered its default from
+300s to 90s, on request.
+
 ## 1.8
 
 **worktodo.txt now accepts `Pfactor=`/`Pminus1=` assignment lines, the shape
