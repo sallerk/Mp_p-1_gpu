@@ -12,6 +12,7 @@
 
 #include "BigInt.h"
 #include "Gcd.h"
+#include "Parallel.h"
 #include "PM1.h"
 #include "timeutil.h"
 
@@ -159,6 +160,64 @@ int runBigIntTests() {
     check(g1 == g2, "gcdLehmer == gcdEuclid (a=" + a.hex() + " b=" + b.hex() + ")");
   }
 
+  // --- gcd edge cases: zero, equal, and word-boundary operands ------------
+  // Real risk this guards: every differential loop in this file (above and
+  // below) `continue`s past any trial where either random operand is zero,
+  // so gcd(0,x)/gcd(x,0)/gcd(0,0) are otherwise never exercised against any
+  // tier -- including gcdGmp's mpz_import/export path, which has a
+  // dedicated "result is zero" branch (see gcdGmp in Gcd.cpp) that nothing
+  // else here reaches. Checked against the mathematical definition
+  // directly, not just cross-checked between this project's own tiers, so a
+  // misunderstanding shared by two implementations can't cancel out and
+  // pass silently.
+  printf("  gcd edge cases: zero, equal, and word-boundary operands\n");
+  {
+    const Nat zero;
+    const Nat x = randomNat(rng, 37);
+    auto checkAll = [&](const Nat& a, const Nat& b, const Nat& want, const string& label) {
+      check(gcdEuclid(a, b) == want, "gcdEuclid " + label);
+      check(gcdLehmer(a, b) == want, "gcdLehmer " + label);
+      check(gcdHalf(a, b)   == want, "gcdHalf "   + label);
+      check(gcdGmp(a, b)    == want, "gcdGmp "    + label);
+    };
+    checkAll(zero, zero, zero, "gcd(0,0) == 0");
+    checkAll(zero, x, x, "gcd(0,x) == x");
+    checkAll(x, zero, x, "gcd(x,0) == x");
+    checkAll(x, x, x, "gcd(x,x) == x");
+
+    // Sizes straddling a 64-bit limb boundary, where an off-by-one in a
+    // limb count (mpz_import/export's `a.size()`, or this project's own
+    // Nat::norm) is most likely to surface.
+    for (size_t limbs : {size_t(1), size_t(63), size_t(64), size_t(65)}) {
+      Nat g = randomNat(rng, limbs);
+      if (g.isZero()) { continue; }
+      Nat a2 = mul(g, randomNat(rng, 3)), b2 = mul(g, randomNat(rng, 5));
+      if (a2.isZero() || b2.isZero()) { continue; }
+      Nat want = gcdEuclid(a2, b2);   // ground truth: the simplest, most-trusted tier
+      const string label = "at " + to_string(limbs) + "-limb boundary";
+      check(gcdLehmer(a2, b2) == want, "gcdLehmer " + label);
+      check(gcdHalf(a2, b2)   == want, "gcdHalf "   + label);
+      check(gcdGmp(a2, b2)    == want, "gcdGmp "    + label);
+    }
+  }
+
+  // --- gcd_threads is vestigial for gcdGmp: varying it must not change the
+  // answer. Doesn't prove gcdGmp ignores it for PERFORMANCE (that would need
+  // a timing test, which this codebase's own lessons distrust on this GPU's
+  // machine -- see tasks/lessons.md), only that a future edit which tried to
+  // thread gcdGmp calls under the hood can't silently corrupt the result.
+  printf("  gcd_threads does not change gcdGmp's answer\n");
+  {
+    Nat g = randomNat(rng, 300), px = randomNat(rng, 400), py = randomNat(rng, 400);
+    Nat a3 = mul(g, px), b3 = mul(g, py);
+    setParallelThreads(1);
+    Nat one = gcdGmp(a3, b3);
+    setParallelThreads(64);
+    Nat many = gcdGmp(a3, b3);
+    setParallelThreads(0);   // restore "auto", the default
+    check(one == many, "gcdGmp result identical at gcd_threads=1 and 64");
+  }
+
   // --- gcd with a shared planted factor -----------------------------------
   printf("  gcd with a planted common factor\n");
   for (int t = 0; t < 60; ++t) {
@@ -169,7 +228,7 @@ int runBigIntTests() {
     Nat a = mul(g, x), b = mul(g, y);
     Nat got = gcdLehmer(a, b);
     // g divides the gcd, and the gcd divides both.
-    check(mod(got, g).isZero() || mod(got, g).isZero(), "planted g divides gcd");
+    check(mod(got, g).isZero(), "planted g divides gcd");
     check(mod(a, got).isZero() && mod(b, got).isZero(), "gcd divides both");
   }
 

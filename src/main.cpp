@@ -1159,18 +1159,15 @@ static int runMain(int argc, char** argv) {
                       : job.hasFactoredTo   ? job.factoredTo
                                             : defaultFactoredTo(cfg.exponent);
 
-      // A Pminus1= entry's own B1/B2 are used whenever it has them. A
-      // Pfactor= line or a bare exponent has none, so it falls back to
-      // config.txt's own value (0 == auto unless the user pinned one) --
-      // reset fresh from that config value every entry, so an assigned-bounds
-      // entry can never leak its B1/B2 into the NEXT entry.
-      if (job.hasAssignedBounds) {
-        cfg.b1 = job.assignedB1;
-        cfg.b2 = job.assignedB2;
-      } else {
-        cfg.b1 = configuredB1;
-        cfg.b2 = configuredB2;
-      }
+      // See Worktodo.h's resolveBounds: a Pminus1= entry's own B1/B2 win
+      // whenever present, else config.txt's own value (0 == auto unless the
+      // user pinned one) -- reset fresh from that config value every entry,
+      // so an assigned-bounds entry can never leak its B1/B2 into the NEXT
+      // entry. Self-tested (Worktodo.cpp's runWorktodoTests) precisely
+      // because this precedence has already changed twice in one session.
+      const ResolvedBounds rb = resolveBounds(job, configuredB1, configuredB2);
+      cfg.b1 = rb.b1;
+      cfg.b2 = rb.b2;
       cfg.aid = job.aid;
       cfg.knownFactors = job.knownFactors;
       cfg.testsSaved = job.testsSaved;

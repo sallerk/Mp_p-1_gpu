@@ -71,6 +71,14 @@ bool loadWorktodo(const std::string& path, std::vector<WorktodoEntry>& out,
 bool consumeWorktodoEntry(const std::string& path, const WorktodoEntry& entry,
                           std::string& err);
 
+// Which B1/B2 a queued entry actually runs at: the entry's own assigned
+// bounds (Pminus1=) whenever it has them, else whatever config.txt says
+// (configuredB1/B2 -- 0 means "auto", same meaning it always has). Pulled
+// out of the queue loop in main.cpp so this precedence decision -- changed
+// twice already in one session -- has one place to test instead of none.
+struct ResolvedBounds { u64 b1, b2; };
+ResolvedBounds resolveBounds(const WorktodoEntry& entry, u64 configuredB1, u64 configuredB2);
+
 // Self-test: round-trip parsing (bare entries, Pfactor=/Pminus1= assignments,
 // comments, blank lines, order), consumeWorktodoEntry correctness, malformed-
 // line and missing-file handling, and the no-trailing-newline-on-the-last-line

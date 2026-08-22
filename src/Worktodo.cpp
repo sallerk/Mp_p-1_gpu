@@ -295,6 +295,11 @@ bool loadWorktodo(const string& path, vector<WorktodoEntry>& out, string& err) {
   return true;
 }
 
+ResolvedBounds resolveBounds(const WorktodoEntry& entry, u64 configuredB1, u64 configuredB2) {
+  if (entry.hasAssignedBounds) { return {entry.assignedB1, entry.assignedB2}; }
+  return {configuredB1, configuredB2};
+}
+
 bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string& err) {
   FILE* fi = fopen(path.c_str(), "r");
   if (!fi) { err = "worktodo.txt disappeared"; return false; }
@@ -505,6 +510,15 @@ int runWorktodoTests() {
           && !out[0].hasFactoredTo && out[0].b2Start == 0;
       if (!ok) { allOk = false; printf("  FAIL Pminus1 B2_start-in-sieve-slot: %s\n", err.c_str()); } }
 
+    // Same slot, but a value a real typo could plausibly produce (200, not
+    // an astronomical B2_start-shaped number) -- still > 127, still fails
+    // sieve_depth, still discarded rather than misread as something else.
+    writeRaw(TEST_FILE, "Pminus1=1,2,86243,-1,50000,3000000,200\n");
+    { vector<WorktodoEntry> out; string err;
+      const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
+          && !out[0].hasFactoredTo && out[0].b2Start == 0;
+      if (!ok) { allOk = false; printf("  FAIL Pminus1 mid-range value in sieve-slot: %s\n", err.c_str()); } }
+
     writeRaw(TEST_FILE,
              "Pminus1=AABBCCDD00112233445566778899AABB,1,2,86243,-1,50000,3000000,74.0,3100000,\"12345\"\n");
     { vector<WorktodoEntry> out; string err;
@@ -544,14 +558,16 @@ int runWorktodoTests() {
     printf("     %s  32 hex chars + comma strips as AID, 31 does not\n", ok ? "PASS" : "FAIL");
   }
 
-  printf("\n  I. rejected shapes: wrong k/b/c, unterminated known-factors quote\n");
+  printf("\n  I. rejected shapes: wrong k/b/c, malformed known-factors\n");
   {
     bool allOk = true;
     const char* bad[] = {
-      "Pminus1=2,2,86243,-1,50000,3000000",     // k != 1
-      "Pminus1=1,3,86243,-1,50000,3000000",     // b != 2
-      "Pminus1=1,2,86243,1,50000,3000000",      // c != -1
-      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345",  // unterminated quote
+      "Pminus1=2,2,86243,-1,50000,3000000",              // k != 1
+      "Pminus1=1,3,86243,-1,50000,3000000",               // b != 2
+      "Pminus1=1,2,86243,1,50000,3000000",                // c != -1
+      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345",            // unterminated quote
+      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345,abc\"",      // non-decimal entry
+      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345,,67890\"",   // empty entry between two valid ones
     };
     for (const char* line : bad) {
       writeRaw(TEST_FILE, string(line) + "\n");
@@ -559,7 +575,7 @@ int runWorktodoTests() {
       if (loadWorktodo(TEST_FILE, out, err)) { allOk = false; printf("  FAIL accepted bad line '%s'\n", line); }
     }
     if (!allOk) { ++fails; }
-    printf("     %s  non-Mersenne k/b/c and an unterminated quote are hard errors\n", allOk ? "PASS" : "FAIL");
+    printf("     %s  non-Mersenne k/b/c and malformed known-factors are hard errors\n", allOk ? "PASS" : "FAIL");
   }
 
   printf("\n  J. unsupported worktodo keyword is a hard error naming it\n");
@@ -588,6 +604,36 @@ int runWorktodoTests() {
         && after[0].exponent == 786613 && after[1].exponent == 28733813;
     if (!ok) { ++fails; printf("  FAIL mixed file: %s\n", err.c_str()); }
     printf("     %s  three line shapes coexist, consume targets the right physical line\n", ok ? "PASS" : "FAIL");
+  }
+
+  // Real bug this guards: the queue loop's bounds precedence has already
+  // changed direction twice in one session (gated behind a config switch
+  // that defaulted to ignoring the assignment, then that switch removed in
+  // favor of always honoring it) and, before this test existed, had zero
+  // automated coverage either way -- a regression here would silently run
+  // the wrong B1/B2 against a real assignment and ship undetected.
+  printf("\n  L. resolveBounds: assignment wins when present, config.txt wins otherwise\n");
+  {
+    WorktodoEntry withBounds; withBounds.hasAssignedBounds = true;
+    withBounds.assignedB1 = 700; withBounds.assignedB2 = 10500;
+    WorktodoEntry bare;   // hasAssignedBounds == false, the bare-exponent/Pfactor= shape
+
+    const ResolvedBounds a = resolveBounds(withBounds, /*configuredB1=*/999, /*configuredB2=*/999);
+    const ResolvedBounds b = resolveBounds(bare, /*configuredB1=*/12345, /*configuredB2=*/67890);
+    const ResolvedBounds c = resolveBounds(bare, /*configuredB1=*/0, /*configuredB2=*/0);
+
+    const bool ok = a.b1 == 700 && a.b2 == 10500      // assignment wins even though config differs
+        && b.b1 == 12345 && b.b2 == 67890             // no assignment -> config.txt's own value
+        && c.b1 == 0 && c.b2 == 0;                    // no assignment, config is "auto" -> stays auto
+    if (!ok) {
+      ++fails;
+      printf("  FAIL resolveBounds: a={%llu,%llu} b={%llu,%llu} c={%llu,%llu}\n",
+             (unsigned long long) a.b1, (unsigned long long) a.b2,
+             (unsigned long long) b.b1, (unsigned long long) b.b2,
+             (unsigned long long) c.b1, (unsigned long long) c.b2);
+    }
+    printf("     %s  assignment bounds override config.txt; a bare/Pfactor= entry falls back to it\n",
+           ok ? "PASS" : "FAIL");
   }
 
   filesystem::remove(TEST_FILE);

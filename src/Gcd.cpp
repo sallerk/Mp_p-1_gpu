@@ -414,7 +414,13 @@ Nat gcdHalf(Nat a, Nat b) {
     // Drive a down to half its length, then let the loop repeat.
     reduceRec(a, b, n / 2);
     if (cmp(a, b) < 0) { std::swap(a, b); }
-    if (a.bits() >= n) {
+    // reduceRec can legitimately drive b to exactly zero (e.g. a == b going
+    // in, the degenerate case gcd(x,x) -- confirmed by a real assertion
+    // failure in timedMod/divrem before this guard existed: no test had ever
+    // called gcdHalf with two equal large operands). The outer while's own
+    // !b.isZero() re-check handles that correctly on the next iteration; this
+    // branch only needs to skip the redundant division, not repeat the check.
+    if (a.bits() >= n && !b.isZero()) {
       // No progress at all: take one honest division so the loop cannot stall.
       Nat r = timedMod(a, b);
       a = std::move(b);
