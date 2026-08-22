@@ -1,8 +1,9 @@
 # Mp_p-1_gpu
 
 GPU **P-1** and **P+1** factoring of Mersenne numbers `M_p = 2^p - 1`, both with
-two stages. Windows / MSVC, no external dependencies — no GMP, no CUDA or
-OpenCL SDK.
+two stages. Windows / MSVC. Nothing to install to run it: no CUDA or OpenCL
+SDK, and GMP (used for the CPU gcd step since 1.8) is linked statically, so
+there's no DLL for it either.
 
 > **Licence: GPLv3.** Derived from [gpuowl / PRPLL](https://github.com/preda/gpuowl)
 > by Mihai Preda and George Woltman — see [ATTRIBUTION.md](ATTRIBUTION.md).
@@ -37,61 +38,59 @@ A full P-1 run — stage 1 to B1, then stage 2 to B2 — on the same GPU (NVIDIA
 RTX 3070), `M82589933` (8 digits, current GIMPS wavefront territory), and the
 same bounds (B1=100,000, B2=2,000,000) for every tool. Every row was measured
 from no checkpoint, and **with no tuning of any kind** — no `tune.txt`, no
-tuned kernel options, no remembered FFT verdicts. Each tool chooses its own
-transform, because on this side that choice is most of what changed in 1.7.
-Two runs each; the best of the two is shown, and the pair agreed to within
-10%. 1.7's row was re-measured with nothing else running on the machine, and
-its final gcd (3m03s) came back identical to the original measurement below
-to the second — a good sign the isolated run is the clean one:
+tuned kernel options, no remembered FFT verdicts. 1.8's row: two runs, best of
+the two shown, the pair agreed to within 2% (4m19s and 4m23s). The 1.7,
+PrMers and gpuowl rows are carried over unchanged from the prior measurement
+(same GPU, same bounds, same no-tuning discipline):
 
 | tool | version | setup | stage 1 | stage 2 | final gcd | **total** | relative |
 |---|---|--:|--:|--:|--:|--:|--:|
-| **Mp_p-1_gpu** | 1.7 | 26s | 1m36s | 2m11s | 3m03s | **7m16s** | **1.00x** |
-| Mp_p-1_gpu | 1.6 | 10s | 2m02s | 2m47s | 2m56s | 7m55s | 1.09x slower |
-| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 1m06s | 3m22s | 4m57s | *(in stage 2)* | 9m25s | 1.30x slower |
+| **Mp_p-1_gpu** | 1.8 | 22s | 1m35s | 2m09s | 12s | **4m19s** | **1.00x** |
+| Mp_p-1_gpu | 1.7 | 26s | 1m36s | 2m11s | 3m03s | 7m16s | 1.68x slower |
+| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | 1m06s | 3m22s | 4m57s | *(in stage 2)* | 9m25s | 2.18x slower |
 | [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | — | *(no P-1 support)* | n/a |
 
-**1.6 against 1.7 is almost entirely which transform gets picked.** 1.6 takes
-the first candidate that passes its correctness check, in catalog order, and
-lands on `4:256:16:256:101`. 1.7 times candidates and keeps the fastest, which
-here is `1:512:8:256:101` — measured 675 against 887 us/it in the same run.
-That one decision is worth ~25% on both GPU stages. Both versions produced the
-identical stage-2 accumulator (`acc res64 5f12b67e85c663c3`), which is the
-check that matters when the transform underneath changes.
+**1.8 against 1.7 is entirely the gcd.** Both land on the same transform
+shape here (`1:256:16:256:101` / `1:512:8:256:101`, 620-650 us/it either way
+— which exact candidate wins that pair is a coin flip run to run, a couple of
+percent, not the story), and stage 1/stage 2 come in within a second of each
+other. What changed is `gcd CPU`: 1.7's own hand-rolled half-GCD takes 3m03s
+on this exponent; 1.8 hands the identical computation to GMP's `mpz_gcd` and
+gets 12s back — about 15x faster, and the whole reason the run drops from
+7m16s to 4m19s. Both versions produced the identical stage-2 accumulator
+(`acc res64 5f12b67e85c663c3`), the check that matters when the gcd backend
+underneath changes.
 
 **Reading the columns.** Every row adds across to its own total, which is why
 `setup` is a column: without it the rows look like they are missing a minute.
 The final gcd needs the stage-2 accumulator, so stage 1, stage 2 and the final
-gcd run in series — 26 + 1m36 + 2m11 + 3m03 = 7m16s for 1.7, matching the wall
+gcd run in series — 22 + 1m35 + 2m09 + 12s = 4m19s for 1.8, matching the wall
 clock.
 
-What `setup` holds differs by tool. For 1.7 it is almost entirely **choosing
-the transform**: 22.9s timing candidates, plus device init and process start.
-For 1.6 it is the 8.0s spent verifying its single candidate. For PrMers it is
-startup and kernel build plus its stage-1 gcd, which runs *after* the stage-1
-timer stops and before stage 2 begins; its stage-2 gcd, by contrast, falls
-inside the stage-2 figure, hence *(in stage 2)*. So the two tools' gcd work is
-not in comparable columns and only the totals compare cleanly.
+What `setup` holds differs by tool. For 1.7 and 1.8 alike it is almost
+entirely **choosing the transform** — about 22s timing candidates, plus
+device init and process start; neither version's GPU kernels changed here, so
+neither version's setup did either. For PrMers it is startup and kernel build
+plus its stage-1 gcd, which runs *after* the stage-1 timer stops and before
+stage 2 begins; its stage-2 gcd, by contrast, falls inside the stage-2
+figure, hence *(in stage 2)*. So the two tools' gcd work is not in comparable
+columns and only the totals compare cleanly.
 
 There is also a *second* gcd on this side — stage 1's — which since 1.6 runs
-alongside stage 2. The program prints its duration (3m09s in this run) but it
-is not a column and does not add: it overlaps stage 2 and the final gcd, both
-of which outlast it.
+alongside stage 2. The program prints its duration (12s here) but it is not a
+column and does not add: it overlaps stage 2 and the final gcd, both of which
+outlast it. In 1.7 this second gcd competed with the final gcd for the same
+worker threads — both were this project's own multi-threaded half-GCD, and
+they would land within seconds of each other, handing back some of what the
+GPU stages had won. GMP's gcd is single-threaded, so 1.8 has nothing left to
+contend over: both gcds finish in 12s each, a fifth of PrMers's own setup
+time alone, and the second gcd is now genuinely free, not just cheaper.
 
-**That second gcd is no longer free, and 1.7 is why.** In 1.6 it takes about as
-long as stage 2 (2m57s against 2m47s), so the two end together and the final
-gcd has the CPU to itself. 1.7's stage 2 finishes earlier while the stage-1
-gcd still needs about as long, so the final gcd now starts while the stage-1
-gcd is still running and the two compete for the same worker threads — in
-this run the two land within seconds of each other (3m09s against 3m03s).
-Some of what 1.7 wins on the GPU is handed back here. It still nets out ahead
-by about 9%.
-
-Mp_p-1_gpu is well ahead on both GPU stages — 2.1x on stage 1 and 2.3x on
-stage 2 — but gives much of it back in the `gcd CPU` phase, which PrMers runs
-through GMP and this runs through its own big-integer code. The final gcd is
-the single largest line in the table at 3m03s, longer than either GPU stage.
-**The gcd, not the pairing, is where the remaining headroom is.**
+Mp_p-1_gpu is well ahead of PrMers on both GPU stages — 2.1x on stage 1, 2.3x
+on stage 2 — and, as of 1.8, no longer gives any of it back in the `gcd CPU`
+phase either: at 12s it is now the *smallest* line in the table, not the
+largest. **The headroom 1.7's own writeup called out here — "the gcd, not the
+pairing, is where the remaining headroom is" — is what 1.8 closes.**
 
 **gpuowl has no P-1 factoring in this build.** Its `-B1`/`-B2` flags are
 documented but, checked directly against its `Worktodo.cpp`, its worktodo
@@ -129,7 +128,10 @@ does not fill the GPU.
 ## Quick start
 
 Build from source — Visual Studio 2019/2022 with "Desktop development with
-C++", nothing else (or take the prebuilt binary from Download above):
+C++" (or take the prebuilt binary from Download above). `build.bat` also
+needs GMP installed once via the vcpkg that ships with Visual Studio; it
+prints the exact command if it's missing. See [MANUAL.md](MANUAL.md) for
+that one-time step:
 
 ```bash
 build.bat
