@@ -140,17 +140,16 @@ report_every = 1000
 
 # ---------------------------------------------------------------------------
 #  CPU THREADS FOR PHASE 3 (the gcd).
-#  Stage 1 runs in three phases:
-#     [1/3] build the exponent   CPU, seconds
-#     [2/3] the squaring ladder  GPU, hours
-#     [3/3] gcd(x-1, M_p)        CPU, minutes -- the GPU is idle here
 #
-#  Phase 3 is the only part that uses several CPU cores. Its large
-#  multiplications are independent (8 per matrix compose, 4 per apply) and are
-#  spread over worker threads. The recursion itself is sequential, so expect a
-#  few times faster rather than N-times-faster.
-#
-#  "auto" uses every hardware thread. Set a number to leave cores free.
+#  VESTIGIAL SINCE 1.8 for the default gcd. The production gcd(x-1, M_p) call
+#  now runs through GMP's mpz_gcd, which is single-threaded by design -- this
+#  setting has no effect on it, no matter what it's set to. It still applies
+#  to this project's OWN half-GCD implementation (gcdHalf), which is no
+#  longer used by default but is kept in the tree, fully self-tested, as a
+#  reversion path (see Gcd.h). If gcdHalf is ever reinstated as the default,
+#  this is what it would consult: "auto" uses every hardware thread; a number
+#  leaves cores free. Left at a concrete value rather than "auto" so it's
+#  ready to matter again without edits, should that ever happen.
 # ---------------------------------------------------------------------------
 gcd_threads = 8
 
@@ -177,17 +176,29 @@ extend = 1
 # ---------------------------------------------------------------------------
 #  AUTOPRIMENET INTEROP.
 #
-#  worktodo.txt accepts Pfactor=/Pminus1= assignment lines -- the shape
-#  AutoPrimeNet (github.com/tdulcet/AutoPrimeNet) and Prime95 itself write --
-#  alongside plain exponents. This program never talks to PrimeNet itself;
-#  AutoPrimeNet is a separate program you run alongside this one, watching the
-#  same worktodo.txt/results.txt.
+#  worktodo.txt accepts Pfactor=/Pminus1= assignment lines alongside plain
+#  exponents. BOTH are P-1 work -- this program does not do trial factoring
+#  (bit-depth-range TF, which Prime95 calls "Factor=", a different keyword
+#  this program does not recognise) -- they differ only in who picks B1/B2:
+#    Pminus1=  PrimeNet already chose B1/B2; use them as-is (see below).
+#    Pfactor=  no B1/B2 given -- just how far this exponent has already
+#              been trial-factored and what a factor is worth in saved
+#              PRP-test credit. The client is expected to pick its own
+#              bounds from those two numbers, exactly the role this
+#              program's own factored_to/bias already play for "auto".
+#  These are two WORK TYPES in the shared worktodo-file format Prime95
+#  itself defines, not "AutoPrimeNet writes one, Prime95 writes the other"
+#  -- either program can emit either line, chosen by which assignment type
+#  PrimeNet handed out, not by which client fetched it. AutoPrimeNet
+#  (github.com/tdulcet/AutoPrimeNet) is the maintained tool that speaks
+#  this format on your behalf; this program never talks to PrimeNet itself
+#  -- AutoPrimeNet is a separate program you run alongside this one,
+#  watching the same worktodo.txt/results.txt.
 #
-#  A Pminus1= line carries its own B1/B2, chosen by PrimeNet for its own
-#  credit/economics, not this program's cost model -- but it's still used
+#  A Pminus1= line's own B1/B2 -- not this program's cost model -- are used
 #  whenever present, on the theory that PrimeNet's assignment is the whole
 #  reason to run AutoPrimeNet alongside this program in the first place. A
-#  Pfactor= line or a bare exponent has no B1/B2 to honor, and falls back to
+#  Pfactor= line or a bare exponent has none to honor, and falls back to
 #  b1/b2 below (auto by default), same as always.
 # ---------------------------------------------------------------------------
 
@@ -195,7 +206,10 @@ extend = 1
 # -- for an unattended run sitting alongside AutoPrimeNet, so the queue
 # running empty for a moment doesn't need a relaunch by hand. Off by default:
 # a script or a one-shot manual run expects an empty queue to exit cleanly.
-wait_for_work = 0
+#   wait_for_work        yes | no  (also accepts 1/0, true/false, on/off)
+#   wait_poll_seconds     how often to recheck the queue while waiting, in
+#                          seconds -- only used when wait_for_work = yes
+wait_for_work = no
 wait_poll_seconds = 5
 
 
