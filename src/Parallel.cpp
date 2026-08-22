@@ -40,9 +40,18 @@ struct Job {
 
 class Pool {
 public:
+  // Deliberately leaked, not a plain function-local static: a `static Pool p`
+  // IS destroyed at normal process exit (by the CRT's atexit machinery --
+  // "lazily constructed" is not "never destroyed"), and workers_'s std::thread
+  // destructors would then run on threads that are still joinable (they sit
+  // forever in workerLoop()'s condvar wait, by design -- see ~Pool() below),
+  // which std::terminate()s the process. Allocating with `new` and never
+  // deleting is what actually achieves "never destroyed": the OS reclaims the
+  // parked threads when the process exits, no destructor ever runs, nothing
+  // to terminate() on.
   static Pool& instance() {
-    static Pool p;
-    return p;
+    static Pool* p = new Pool();
+    return *p;
   }
 
   void submit(Job j) {
@@ -76,9 +85,12 @@ private:
     for (int i = 0; i < n; ++i) { workers_.emplace_back([this] { workerLoop(); }); }
   }
 
-  // Never destroyed: the pool is a function-local static that outlives every
-  // caller, and joining at process exit buys nothing while risking a shutdown
-  // deadlock against a worker mid-task.
+  // Never runs -- see instance()'s comment: the Pool itself is deliberately
+  // leaked, specifically so this destructor is never reached. Joining at
+  // process exit would buy nothing while risking a shutdown deadlock against
+  // a worker mid-task, and destroying the still-joinable worker threads
+  // without joining them is worse than not destroying them at all (that is
+  // the bug this leak avoids).
   ~Pool() = default;
 
   static void runJob(Job& j) {
