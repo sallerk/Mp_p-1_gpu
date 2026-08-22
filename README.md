@@ -40,21 +40,25 @@ checkpoint, no tuning cache. 1.8's M82589933 row is two runs agreeing within
 2%; every other row is a single clean run (see the note below the table for
 what that trades off).
 
-| exponent | tool | version | setup | stage 1 | stage 2 | final gcd | **total** | vs 1.8 |
-|---|---|---|--:|--:|--:|--:|--:|--:|
-| M25964951 | **Mp_p-1_gpu** | 1.8 | 19s | 40s | 47s | 3s | **1m50s** | **1.00x** |
-| M25964951 | Mp_p-1_gpu | 1.7 | 19s | 41s | 46s | 41s | 2m28s | 1.35x |
-| M25964951 | [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | — | 1m03s | 1m38s | *(in stage)* | 2m41s | 1.46x |
-| M43112609 | **Mp_p-1_gpu** | 1.8 | 18s | 1m09s | 1m22s | 6s | **2m55s** | **1.00x** |
-| M43112609 | Mp_p-1_gpu | 1.7 | 17s | 1m10s | 1m25s | 1m19s | 4m11s | 1.43x |
-| M43112609 | PrMers | v99.95 | — | 1m38s | 2m26s | *(in stage)* | 4m05s | 1.40x |
-| M57885161 | **Mp_p-1_gpu** | 1.8 | 20s | 1m34s | 2m14s | 8s | **4m18s** | **1.00x** |
-| M57885161 | Mp_p-1_gpu | 1.7 | 20s | 1m34s | 2m11s | 2m09s | 6m14s | 1.45x |
-| M57885161 | PrMers | v99.95 | — | 3m15s | 4m57s | *(in stage)* | 8m12s | 1.91x |
-| M82589933 | **Mp_p-1_gpu** | 1.8 | 22s | 1m35s | 2m09s | 12s | **4m19s** | **1.00x** |
-| M82589933 | Mp_p-1_gpu | 1.7 | 26s | 1m36s | 2m11s | 3m03s | 7m16s | 1.68x |
-| M82589933 | PrMers | v99.95 | 1m06s | 3m22s | 4m57s | *(in stage)* | 9m25s | 2.18x |
-| M82589933 | [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | — | *no P-1 support* | n/a |
+| tool | version | setup | stage 1 | stage 2 | final gcd | **total** | vs 1.8 |
+|---|---|--:|--:|--:|--:|--:|--:|
+| **M25964951** (~26M) | | | | | | | |
+| **Mp_p-1_gpu** | 1.8 | 19s | 40s | 47s | 3s | **1m50s** | **1.00x** |
+| Mp_p-1_gpu | 1.7 | 19s | 41s | 46s | 41s | 2m28s | 1.35x |
+| [PrMers](https://github.com/cherubrock-seb/PrMers) | v99.95 | — | 1m03s | 1m38s | *(in stage)* | 2m41s | 1.46x |
+| **M43112609** (~43M) | | | | | | | |
+| **Mp_p-1_gpu** | 1.8 | 18s | 1m09s | 1m22s | 6s | **2m55s** | **1.00x** |
+| Mp_p-1_gpu | 1.7 | 17s | 1m10s | 1m25s | 1m19s | 4m11s | 1.43x |
+| PrMers | v99.95 | — | 1m38s | 2m26s | *(in stage)* | 4m05s | 1.40x |
+| **M57885161** (~58M) | | | | | | | |
+| **Mp_p-1_gpu** | 1.8 | 20s | 1m34s | 2m14s | 8s | **4m18s** | **1.00x** |
+| Mp_p-1_gpu | 1.7 | 20s | 1m34s | 2m11s | 2m09s | 6m14s | 1.45x |
+| PrMers | v99.95 | — | 3m15s | 4m57s | *(in stage)* | 8m12s | 1.91x |
+| **M82589933** (~83M) | | | | | | | |
+| **Mp_p-1_gpu** | 1.8 | 22s | 1m35s | 2m09s | 12s | **4m19s** | **1.00x** |
+| Mp_p-1_gpu | 1.7 | 26s | 1m36s | 2m11s | 3m03s | 7m16s | 1.68x |
+| PrMers | v99.95 | 1m06s | 3m22s | 4m57s | *(in stage)* | 9m25s | 2.18x |
+| [gpuowl](https://github.com/preda/gpuowl) | v7.5 | — | — | — | — | *no P-1 support* | n/a |
 
 **The gap is the gcd, and it grows with the exponent.** 1.8's stage 1/stage 2
 match 1.7's to within a couple of seconds at every size — both run the same
