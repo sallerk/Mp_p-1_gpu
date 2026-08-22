@@ -36,18 +36,6 @@ enum PauseMode { PAUSE_AUTO = 0, PAUSE_ALWAYS, PAUSE_NEVER };
 //                pays to push B1 harder.
 enum Stage2Mode { STAGE2_AUTO = 0, STAGE2_ON, STAGE2_OFF };
 
-// Whether a Pminus1= worktodo assignment's own B1/B2 are trusted, or this
-// program always computes its own regardless. See Bounds.h: its cost model
-// is measured against THIS implementation and hardware, unlike a value
-// PrimeNet assigned for its own (different) credit/economics model -- so
-// AUTO, trusting this program's own model, is the default.
-//   BOUNDS_AUTO        always compute B1/B2 here, ignore an assignment's own
-//                       even when present.
-//   BOUNDS_ASSIGNMENT  a Pminus1= line's B1/B2 are pinned and used as-is; a
-//                       Pfactor= line or a bare exponent has none to honor,
-//                       so it falls back to AUTO regardless of this setting.
-enum BoundsSource { BOUNDS_AUTO = 0, BOUNDS_ASSIGNMENT };
-
 struct Config {
   // p in M_p = 2^p - 1; must be prime. Populated per worktodo.txt entry by
   // the driver, not parsed from config.txt -- see Worktodo.h.
@@ -113,8 +101,6 @@ struct Config {
   //   stage 2  a smaller completed B2's accumulator seeds this run, which then
   //            walks only (oldB2, newB2].
   bool extend = true;
-
-  int boundsSource = BOUNDS_AUTO;   // bounds_source = auto | assignment
 
   // Instead of exiting when worktodo.txt is empty, wait and re-check it --
   // for running unattended alongside AutoPrimeNet (github.com/tdulcet/

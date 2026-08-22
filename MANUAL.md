@@ -130,7 +130,6 @@ touch:
 | `bounds_tolerance` | how much extra work to accept for a better chance |
 | `gcd_threads` | CPU threads for the gcd phase — no longer consulted by the default gcd (GMP's `mpz_gcd`, single-threaded, since 1.8); still respected by this program's own `gcdHalf` implementation, kept as the reversion path |
 | `username`, `computer_name` | written into results for PrimeNet |
-| `bounds_source` | `auto` (default) always computes B1/B2 here; `assignment` honors a `Pminus1=` worktodo line's own bounds — see below |
 | `wait_for_work` | `no` (default) exits on an empty queue; `yes` waits and rechecks it — for running alongside AutoPrimeNet |
 | `wait_poll_seconds` | how often to recheck, when `wait_for_work = yes` — default 5 |
 
@@ -159,9 +158,9 @@ nothing else) and, for `Pminus1=`, its own `B1`/`B2`:
 Pminus1=1,2,86243,-1,50000,3000000
 ```
 
-Whether that B1/B2 is actually used depends on `bounds_source` (above):
-`auto`, the default, ignores it and computes fresh bounds exactly as a bare
-exponent would; `assignment` pins it. Either way, the entry's exponent,
+That B1/B2 is used as-is whenever present. A `Pfactor=` line or a bare
+exponent has none to honor, and falls back to `config.txt`'s own `b1`/`b2`
+(auto by default) exactly as before. Either way, the entry's exponent,
 trial-factoring depth (`Pfactor=`'s `how_far_factored` or `Pminus1=`'s
 `sieve_depth`, when present — it wins over `factored_to = auto`'s built-in
 default, though an *explicit* `factored_to = N` in config.txt still wins

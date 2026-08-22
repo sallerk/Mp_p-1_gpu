@@ -9,10 +9,11 @@
 // A line can also be a Pfactor= or Pminus1= assignment, the shape AutoPrimeNet
 // (https://github.com/tdulcet/AutoPrimeNet) and Prime95 itself write. Such a
 // line carries its own k,b,n,c (validated as a Mersenne number: k=1,b=2,c=-1)
-// and, for Pminus1=, its own B1/B2 -- see config.txt's bounds_source for
-// whether those are honored or this program computes its own. Both may also
-// carry an assignment ID and known factors, echoed back into results.txt so
-// AutoPrimeNet's own upload step stays consistent with what PrimeNet expects.
+// and, for Pminus1=, its own B1/B2, which are used whenever present -- a
+// Pfactor= line or a bare exponent has none, and falls back to config.txt's
+// own b1/b2 (auto by default). Both may also carry an assignment ID and
+// known factors, echoed back into results.txt so AutoPrimeNet's own upload
+// step stays consistent with what PrimeNet expects.
 // This program never talks to PrimeNet itself; AutoPrimeNet is a separate
 // process that reads/writes these same two files.
 

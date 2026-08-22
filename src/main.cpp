@@ -925,9 +925,9 @@ static int runMain(int argc, char** argv) {
     // exponent does not inherit an earlier one's default.
     const u32 configuredFactoredTo = cfg.factoredTo;
 
-    // Same idea, for bounds_source = assignment: config.txt's own b1/b2 (0
-    // == auto unless the user set them) is what every entry falls back to
-    // once a Pminus1= entry's own assigned bounds are no longer in scope.
+    // Same idea, for an assigned Pminus1= entry's bounds: config.txt's own
+    // b1/b2 (0 == auto unless the user set them) is what every entry falls
+    // back to once that entry's own assigned bounds are no longer in scope.
     const u64 configuredB1 = cfg.b1;
     const u64 configuredB2 = cfg.b2;
 
@@ -1159,11 +1159,12 @@ static int runMain(int argc, char** argv) {
                       : job.hasFactoredTo   ? job.factoredTo
                                             : defaultFactoredTo(cfg.exponent);
 
-      // A Pminus1= entry's own B1/B2 are honored only when bounds_source =
-      // assignment says to trust them; either way, every entry starts from
-      // config.txt's own value (0 == auto unless the user pinned one) so an
-      // assigned-bounds entry can never leak its B1/B2 into the NEXT entry.
-      if (cfg.boundsSource == BOUNDS_ASSIGNMENT && job.hasAssignedBounds) {
+      // A Pminus1= entry's own B1/B2 are used whenever it has them. A
+      // Pfactor= line or a bare exponent has none, so it falls back to
+      // config.txt's own value (0 == auto unless the user pinned one) --
+      // reset fresh from that config value every entry, so an assigned-bounds
+      // entry can never leak its B1/B2 into the NEXT entry.
+      if (job.hasAssignedBounds) {
         cfg.b1 = job.assignedB1;
         cfg.b2 = job.assignedB2;
       } else {

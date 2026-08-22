@@ -16,13 +16,14 @@ rather than assumed. The assignment ID and known factors are echoed back into
 JSON keys, so AutoPrimeNet's upload step stays consistent with what PrimeNet
 expects back.
 
-**New config.txt key, `bounds_source = auto | assignment`.** A `Pminus1=`
-line carries its own B1/B2, chosen by PrimeNet for its own credit/economics,
-not this program's cost model. `auto` (default) ignores that and always
-computes fresh bounds, same as a bare exponent -- this program's bounds model
-is measured against its own hardware and implementation (see `Bounds.h`), so
-trusting it by default is the same call this project has made before, not a
-new one. `assignment` pins `Pminus1=`'s own B1/B2 instead.
+**A `Pminus1=` assignment's own B1/B2 are used whenever present.** A
+`Pfactor=` line or a bare exponent has none to honor, and falls back to
+config.txt's own `b1`/`b2` (auto by default) exactly as before. (An earlier
+draft of this feature gated this behind a `bounds_source = auto |
+assignment` config key, defaulting to ignoring the assignment's own bounds;
+that key has been removed in favor of always preferring them -- the whole
+point of running AutoPrimeNet alongside this program is to act on what it
+fetches.)
 
 A `Pfactor=`'s `how_far_factored`/`Pminus1=`'s `sieve_depth` now feeds
 `factored_to`'s existing auto-default (an explicit `factored_to=` in

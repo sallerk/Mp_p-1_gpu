@@ -184,17 +184,12 @@ extend = 1
 #  same worktodo.txt/results.txt.
 #
 #  A Pminus1= line carries its own B1/B2, chosen by PrimeNet for its own
-#  credit/economics, not this program's cost model.
-#
-#    auto        (default) always compute B1/B2 here, the same as a bare
-#                exponent -- this program's bounds model is measured against
-#                its own hardware and implementation, so trusting it is the
-#                safer default.
-#    assignment  honor a Pminus1= line's own B1/B2 when present. A Pfactor=
-#                line or a bare exponent has none to honor and falls back to
-#                auto regardless of this setting.
+#  credit/economics, not this program's cost model -- but it's still used
+#  whenever present, on the theory that PrimeNet's assignment is the whole
+#  reason to run AutoPrimeNet alongside this program in the first place. A
+#  Pfactor= line or a bare exponent has no B1/B2 to honor, and falls back to
+#  b1/b2 below (auto by default), same as always.
 # ---------------------------------------------------------------------------
-bounds_source = auto
 
 # Instead of exiting when worktodo.txt runs dry, wait and keep re-checking it
 # -- for an unattended run sitting alongside AutoPrimeNet, so the queue
