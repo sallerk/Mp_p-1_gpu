@@ -519,6 +519,74 @@ exponentiation per entry. `x^(j^2)` is quadratic in `j`, so it needs a second
 difference rather than a first, but it works the same way and needs no
 inverse — which is what 1.7 does, and where its speedup comes from.
 
+## Stage-2 memory, and the largest exponent that fits
+
+`stage2()` allocates `J + 9` full-residue buffers: the `T_j` table
+(`J = phi(D)*w/2`), six scratch (`x`, `acc`, `A`, `S`, `C`, `diff`), and three
+more, transient, for the table-building chain. One residue is
+`8 * fft_words` bytes. **Nothing in it is sized by B1 or B2** -- a longer walk
+changes the multiply count, not the allocation. Measured at a fixed exponent,
+FFT and shape, B2 = 2M against B2 = 80M (40x the primes): 701 MB against
+711 MB, which is sampling noise.
+
+B1 does bound the *shape*, and only downward: `chooseStage2Shape` rejects any
+`(D, w)` with `w*D/2 > B1`, since every prime in `(B1, B2]` has to exceed the
+window half-width. At B1 = 200 the only shape left is the floor; by B1 = 1000
+the constraint stops binding and the memory budget takes over. Below B1 = 105
+even the floor violates it and stage 2 throws -- not reachable with any
+auto-chosen bound, but worth knowing if you pin a tiny `b1` by hand.
+
+That floor is `D=210 w=1`, 24 buffers: `pickStage2Shape` falls back to it when
+nothing fits the budget, so it is also the point at which stage 2 stops being
+able to run at all. Its cost, and the largest exponent each transform size can
+hold:
+
+| FFT words | one residue | max exponent | stage-2 floor |
+|--:|--:|--:|--:|
+| 262,144 | 2 MB | 13,046,875 | 203 MB |
+| 524,288 | 4 MB | 26,015,625 | 276 MB |
+| 1,048,576 | 8 MB | 51,953,125 | 422 MB |
+| 2,097,152 | 16 MB | 99,785,156 | **701 MB** |
+| 4,194,304 | 32 MB | 198,515,625 | **1258 MB** |
+| 8,388,608 | 64 MB | 394,240,722 | **2400 MB** |
+| 16,777,216 | 128 MB | 746,905,516 | **4940 MB** |
+| 33,554,432 | 256 MB | 1,399,804,687 | 9.5 GB |
+| 67,108,864 | 512 MB | 2,650,781,250 | 18.8 GB |
+
+Bold entries are measured (RTX 3070, 1.8.1, two shapes per size so the table
+cost and the fixed overhead separate cleanly); the rest follow the fit those
+four give, `130 MB + (8*buffers + 100) * fft_words`, which reproduces them to
+within 3%. Max exponents come from the transform tables via `--bounds`.
+
+Read off as a card-size limit:
+
+| GPU RAM | headless | with a desktop on it (~1.4 GB) |
+|---|--:|--:|
+| 2 GB | 198 M | 52 M |
+| 4 GB | 394 M | 394 M |
+| 6 GB | 747 M | 394 M |
+| 8 GB | 747 M | 747 M |
+| 10 GB | 1.40 G | 747 M |
+| 11-16 GB | 1.40 G | 1.40 G |
+| 24 GB and up | 2.65 G | 2.65 G |
+
+Four things this table is not:
+
+- **It is not a speed target.** The floor is where stage 2 still *runs*. At a
+  GIMPS-wavefront exponent the budget picks 144 buffers or more, and running at
+  24 costs roughly a quarter of stage-2 throughput. Pin `stage2_d` /
+  `stage2_w` if you want the floor deliberately.
+- **There is no graceful degradation past it.** When even 24 buffers exceed the
+  budget, `pickStage2Shape` still returns `D=210 w=1` -- there is no "stage 2
+  declined, not enough memory" path, so the allocation simply fails.
+- **Verification can bite before memory does.** At 16,777,216 words on this
+  card only `1:1K:8:1K:202` passed its correctness check; the seven other shapes
+  tried at that size, across all four arithmetic types, failed. Near the top of
+  a size class the usable limit can be below the memory limit.
+- **It assumes the smallest fitting transform.** A real run picks by measured
+  cost among verified configs and can land a size class up, doubling every
+  number here. For M100000223 it picked the smallest (4,194,304 words).
+
 ## Self-tests
 
 ```
@@ -554,6 +622,13 @@ numbers.
   (262144 words), so nothing below this exponent has any usable shape at
   all — `--bounds`, `--tune`, and a real run all just fail with "no FFT fits
   this exponent".
+- **Maximum exponent is 4294967295.** Exponents are held in a `u32`
+  (`WorktodoEntry::exponent`, `Config::exponent`), so anything larger cannot
+  be represented at all. Since 1.9 the worktodo parser refuses such a line
+  with the exponent quoted back; before 1.9 it wrapped silently and ran a
+  different exponent, which is why this is now a self-tested limit rather
+  than an implicit one. In practice the transform catalog runs out well
+  before the type does.
 - **P+1 is a secondary mode.** Its yield per unit work is well below P-1's, so
   P-1 is the default; run it in earnest only once P-1 has been tried.
 - **`method = both` does not stop early across methods.** Finding a factor in

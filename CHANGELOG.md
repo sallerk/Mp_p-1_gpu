@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.9
+
+**Fixed a silent wrong-answer bug: a worktodo exponent above 2^32-1 wrapped
+into a different exponent and ran.** `parseKbnc` bounded the exponent from
+below (`n < 3`) but never from above, then did `exponent = u32(n + 0.5)`.
+So `Pfactor=1,2,9993000001,-1,96,2` became **M1403065409** -- not an error,
+not a warning, just a full P-1 run against a Mersenne number nobody asked
+about, with a `results.txt` line to match. Anything above the limit is now
+refused by the parser with the exponent quoted back. The limit is
+representational rather than a policy choice: `WorktodoEntry::exponent` and
+`Config::exponent` are both `u32`, so such an exponent cannot be held at all.
+Found while widening the worktodo corpus below, not by a bug report -- which
+is the argument for corpus tests over hand-picked fixtures.
+
+**Stage 1 + stage 2 against known factors, as a new self-test section
+(`--selftest=pm1`, G3 section D).** The suite had two ends covered and a gap
+in the middle: G3 proved stage 1 reaches a factor whose `k` is B1-smooth, and
+M7 proved the stage-2 engine matches a CPU reference, but nothing ran *the
+whole method at published bounds and got the published factor back*. Eight
+vectors now do, spanning 256K- to 8M-word transforms and exponents from 1e6
+to 3e8. Every one was verified offline before being written down: the factor
+divides `2^p-1`, and `(f-1)/(2p)` is B1-powersmooth apart from exactly one
+prime in `(B1, B2]` -- the property that makes stage 2, specifically, the
+thing that finds it. Two vectors carry a second factor the same bounds also
+reach, so the expected value is the product.
+
+Four of the eight are drawn per run, so the gate stays bounded (~6 minutes)
+while every vector gets exercised across repeated runs. The selection seed is
+printed and `MP_SELFTEST_SEED` pins it: a random subset you cannot replay is
+a bad test, because the run that fails is the one you need to repeat.
+
+One constraint worth recording, since it shapes which bounds are usable at
+all: `buildStage2Plan` refuses a shape with `w*D/2 > B1`, so at the floor
+shape (D=210, w=1) no vector with B1 below 105 can run a stage 2. Vectors
+whose natural bound is smaller are raised to 1000, which is harmless -- a
+larger B1 only covers more, and each vector's stage-2 prime stays well above
+it.
+
+**A 60-entry `Pfactor=` corpus in the worktodo self-test (section M).**
+A PrimeNet-shaped sweep from 1e6 to 1e10 and TF 67 to 96 bits. Section F
+already covered the *shape* of a `Pfactor=` line (assignment ID, known
+factors); this covers its *range*, which is where the parser was actually
+wrong. The five over-range entries are the point of the corpus rather than an
+afterthought -- they assert refusal, and would have caught the wraparound
+above the day it was written.
+
 ## 1.8.1
 
 **A `Pminus1=` assignment's own B1/B2 are now used whenever present, by

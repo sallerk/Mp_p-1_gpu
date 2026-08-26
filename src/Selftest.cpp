@@ -24,6 +24,7 @@
 #include "timeutil.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <algorithm>
 #include <atomic>
@@ -127,7 +128,7 @@ int runEngineTests(GpuCommon shared, Queue* q, const string& fftSpec, bool quick
 // full target size.
 // ---------------------------------------------------------------------------
 int runPM1Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
-  printf("G3: P-1 stage 1 against known factors\n\n");
+  printf("G3: P-1 against known factors\n\n");
   const int before = failures;
 
   struct Vector { u32 exponent; u64 b1; const char* factor; };
@@ -225,6 +226,103 @@ int runPM1Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
            ok ? "PASS" : "FAIL", p, (unsigned long long) b1,
            (unsigned long long) seen, (unsigned long long) total,
            (unsigned long long) res64(full), (unsigned long long) res64(resumed));
+  }
+
+
+  // ---- D. stage 1 + stage 2 against known factors --------------------------
+  //
+  // A and B above prove stage 1 reaches a factor whose k is B1-smooth. Nothing
+  // there exercises the pairing walk against real arithmetic: the stage-2 tests
+  // in M7 check the ENGINE against a CPU reference and against a synthetic
+  // factor, but not "run the whole method at published bounds and get the
+  // published factor back". That is what this does.
+  //
+  // Every vector below was verified offline before being written down -- the
+  // factor divides 2^p-1, and (f-1)/(2p) is B1-powersmooth apart from exactly
+  // one prime in (B1, B2], which is the property that makes stage 2 the thing
+  // that finds it. Two of them (M1000099, M300008497) carry a second factor
+  // that the same bounds also reach, so the expected value is the product.
+  //
+  // The B1s are not always the smallest that work. D=210 w=1 needs w*D/2 = 105
+  // <= B1 or buildStage2Plan refuses the shape, so vectors whose natural bound
+  // is below that are raised to 1000 -- harmless, since a larger B1 only covers
+  // more, and each one's stage-2 prime stays well above it.
+  //
+  // The pool is sampled rather than run whole to keep the gate's cost bounded:
+  // all eight back to back is a couple of minutes, four is well under one, and
+  // over repeated runs every vector gets exercised.
+  printf("\n  D. stage 1 + stage 2 against known factors (random subset)\n");
+  {
+    struct SVector { u32 exponent; u64 b1; u64 b2; const char* factor; };
+    static const SVector S2VECTORS[] = {
+      { 1000099,     107,  350179, "155058493988826487335266033969" }, // two factors, s=104009 and s=350179
+      { 3000077,    8000, 1200000, "10235118022140996045023873"     }, // s=1166483
+      { 10000831,  29173,  492251, "646560662529991467527"          }, // s=492251
+      { 24000577,   1000,  281339, "13504596665207"                 }, // s=281339
+      { 30000853,   1000,   75011, "4500787968767"                  }, // s=75011
+      { 54447193,   1181,  682009, "17261184235049628259201"        }, // s=682009
+      { 249500501,  1000,  113467, "11607130072256471"              }, // s=113467
+      { 300008497,  1000,   41161, "1422604742689454023244777"      }, // stage 1 + s=41161
+    };
+    constexpr size_t POOL = sizeof(S2VECTORS) / sizeof(S2VECTORS[0]);
+    constexpr size_t PICK = 4;
+
+    // A random subset that cannot be replayed is a bad test: the one run that
+    // fails is the one you need to repeat. So the seed is printed, and can be
+    // pinned to reproduce a failing selection exactly.
+    u64 seed = 0;
+    if (const char* s = getenv("MP_SELFTEST_SEED")) {
+      seed = strtoull(s, nullptr, 10);
+    } else {
+      seed = (u64(random_device{}()) << 32) | random_device{}();
+    }
+    printf("     seed %llu  (set MP_SELFTEST_SEED=%llu to replay this selection)\n",
+           (unsigned long long) seed, (unsigned long long) seed);
+
+    vector<size_t> order(POOL);
+    for (size_t i = 0; i < POOL; ++i) { order[i] = i; }
+    mt19937_64 rng(seed);
+    shuffle(order.begin(), order.end(), rng);
+    order.resize(PICK);
+    sort(order.begin(), order.end());
+
+    for (size_t ix : order) {
+      const SVector& v = S2VECTORS[ix];
+
+      Nat want;
+      const bool parsed = fromDecimal(v.factor, want);
+      check(parsed, "parse expected factor");
+      if (!parsed) { continue; }
+
+      Config cfg;
+      cfg.exponent = v.exponent;
+      cfg.fftSpec = fftSpec;
+      cfg.reportEvery = 0;              // no progress line inside a test
+      cfg.checkpoint = false;           // hermetic: leave no save files behind
+
+      FFTConfig fft = smallestFFT(v.exponent, fftSpec);
+      auto gpu = Gpu::make(q, v.exponent, shared, fft, {}, false);
+
+      Timer t;
+      // doGcd = false: a stage-1 gcd here would cost more than the walk it
+      // follows, and it is not what this vector is testing. A factor that IS
+      // stage-1 reachable still shows up below -- x == 1 (mod f) makes every
+      // A_m - T_j term divisible by f, so the stage-2 accumulator carries it.
+      PM1Result r1 = runPM1Stage1(*gpu, cfg, v.b1, false, /*doGcd=*/false);
+      PM1Stage2Result r2 = runPM1Stage2(*gpu, cfg, r1.residue, v.b1, v.b2,
+                                        /*d=*/210, /*w=*/1, false);
+
+      // Divisibility, not equality: the gcd may legitimately contain OTHER
+      // factors of M_p that these bounds also happen to reach. What is being
+      // asserted is that the published one is in there.
+      const bool ok = !r2.gcdValue.isZero() && !r2.gcdValue.isOne() &&
+                      mod(r2.gcdValue, want).isZero();
+      check(ok, "stage 2 finds the known factor of M" + to_string(v.exponent));
+      printf("     %s  M%-9u B1=%-6llu B2=%-8llu found: %-3s  (%s)\n",
+             ok ? "PASS" : "FAIL", v.exponent,
+             (unsigned long long) v.b1, (unsigned long long) v.b2,
+             ok ? "yes" : "NO", fmtDuration(t.at()).c_str());
+    }
   }
 
   printf("\nG3: %d failed.\n\n", failures - before);

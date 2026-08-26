@@ -141,6 +141,18 @@ bool parseKbnc(const vector<string>& f, u32 lineNo, u32& exponent, string& err) 
     err = "worktodo.txt line " + to_string(lineNo) + ": exponent " + f[2] + " is too small";
     return false;
   }
+    // There was no upper bound here before 1.9, and the cast below wrapped in
+  // silence: a Pfactor= line for 9993000001 became M1403065409 and ran to
+  // completion, writing a results.txt entry for a Mersenne number nobody
+  // asked about. Exactly the failure this project refuses everywhere else --
+  // a wrong answer that looks right. Exponents above 2^32-1 cannot be held at
+  // all (WorktodoEntry::exponent and Config::exponent are both u32), so this
+  // is a representational limit, not a policy choice.
+  if (n > 4294967295.0) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": exponent " + f[2]
+        + " is above this program's limit of 4294967295";
+    return false;
+  }
   exponent = u32(n + 0.5);
   return true;
 }
@@ -638,6 +650,117 @@ int runWorktodoTests() {
 
   filesystem::remove(TEST_FILE);
   filesystem::remove(string(TEST_FILE) + ".tmp");
+
+  printf("\n  M. Pfactor= corpus: a real assignment sweep, and out-of-range refused\n");
+  {
+    // A PrimeNet-shaped sweep: 60 assignments spanning 1e6 to 1e10 and TF 67
+    // to 96 bits. Section F covers the SHAPE of a Pfactor= line (AID, known
+    // factors); this covers its RANGE, which is where the parser was actually
+    // wrong -- before 1.9 every exponent above 2^32-1 wrapped into a
+    // different, entirely plausible exponent and ran. The five over-range
+    // entries are the point of this corpus, not an afterthought: they must be
+    // REFUSED, with an error, never silently reinterpreted.
+    struct C { u64 exponent; u32 tf; };
+    static const C CORPUS[] = {
+      { 1000099u,    67 },
+      { 3000077u,    67 },
+      { 4444091u,    70 },
+      { 10000831u,   68 },
+      { 24000577u,   70 },
+      { 30000853u,   67 },
+      { 50001781u,   74 },
+      { 51558151u,   74 },
+      { 54447193u,   74 },
+      { 58610467u,   74 },
+      { 61012769u,   74 },
+      { 81229789u,   75 },
+      { 100000081u,  76 },
+      { 110505011u,  76 },
+      { 120002191u,  77 },
+      { 150000713u,  77 },
+      { 200001187u,  79 },
+      { 230086243u,  79 },
+      { 249500501u,  79 },
+      { 290001377u,  80 },
+      { 300008497u,  80 },
+      { 301000159u,  80 },
+      { 332230189u,  81 },
+      { 353466917u,  81 },
+      { 407363239u,  81 },
+      { 423000089u,  82 },
+      { 464000021u,  82 },
+      { 490000003u,  82 },
+      { 502000027u,  82 },
+      { 563021377u,  81 },
+      { 640402457u,  84 },
+      { 654036583u,  84 },
+      { 745964951u,  84 },
+      { 840859433u,  83 },
+      { 901000031u,  85 },
+      { 940216091u,  85 },
+      { 980000521u,  78 },
+      { 1100000081u, 68 },
+      { 1138000001u, 80 },
+      { 1199999579u, 68 },
+      { 1299999919u, 68 },
+      { 1414000001u, 87 },
+      { 1552999957u, 87 },
+      { 1553000003u, 87 },
+      { 1553000143u, 87 },
+      { 1708000339u, 88 },
+      { 1862000159u, 88 },
+      { 2000000089u, 89 },
+      { 3321928601u, 91 },
+      { 3321928619u, 91 },
+      { 3321928703u, 91 },
+      { 3321928787u, 91 },
+      { 3330000293u, 91 },
+      { 4000000229u, 92 },
+      { 4294967111u, 92 },
+      { 4294967357u, 92 },
+      { 6330000829u, 94 },
+      { 8230000949u, 96 },
+      { 8883334777u, 96 },
+      { 9993000001u, 96 },
+    };
+    constexpr u64 MAX_EXP = 4294967295ull;
+    bool allOk = true;
+    u32 accepted = 0, refused = 0;
+    for (const C& c : CORPUS) {
+      const string line = "Pfactor=1,2," + to_string(c.exponent) + ",-1,"
+                        + to_string(c.tf) + ",2";
+      writeRaw(TEST_FILE, line + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      const bool parsed = loadWorktodo(TEST_FILE, out, err) && out.size() == 1;
+      const bool inRange = c.exponent <= MAX_EXP;
+      bool ok;
+      if (inRange) {
+        ok = parsed && out[0].exponent == u32(c.exponent)
+             && out[0].hasFactoredTo && out[0].factoredTo == c.tf;
+        if (ok) { ++accepted; }
+      } else {
+        // Refused is the ONLY acceptable outcome here. Parsing "successfully"
+        // into some other exponent is precisely the bug this catches.
+        ok = !parsed;
+        if (ok) {
+          ++refused;
+        } else if (out.size() == 1) {
+          printf("  FAIL exponent %llu silently became M%u\n",
+                 (unsigned long long) c.exponent, out[0].exponent);
+        }
+      }
+      if (!ok) {
+        allOk = false;
+        printf("  FAIL Pfactor corpus '%s': %s\n", line.c_str(),
+               err.empty() ? "unexpected outcome" : err.c_str());
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  %u in-range parsed, %u over-range refused (of %zu)\n",
+           allOk ? "PASS" : "FAIL", accepted, refused,
+           sizeof(CORPUS) / sizeof(CORPUS[0]));
+  }
 
   printf("\n%s\n", fails ? "worktodo: FAILED" : "worktodo: all tests passed");
   return fails ? 1 : 0;
