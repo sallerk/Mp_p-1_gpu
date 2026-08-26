@@ -68,6 +68,12 @@ struct CostModel {
 // ratio grows as about n^0.34.
 double gcdIterCost(double exponent);
 
+// Stage 2 forms its setup exponents as machine words, so (m*D)^2 must fit;
+// that caps B2. Defined here rather than repeated as a literal, because the
+// cap being enforced in one place and checked in another is what let an
+// out-of-range B2 turn into a silent B1 = 0 run before 1.9.1.
+inline constexpr double STAGE2_B2_MAX = 4e9;
+
 struct Bounds {
   u64 b1 = 0;
   u64 b2 = 0;              // == b1 means no stage 2 is worth running

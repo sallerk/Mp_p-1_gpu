@@ -942,6 +942,12 @@ static int runMain(int argc, char** argv) {
         cfg.exponent = peek.front().exponent;
         cfg.factoredTo = configuredFactoredTo ? configuredFactoredTo
                                               : defaultFactoredTo(cfg.exponent);
+      } else if (!werr.empty()) {
+        // Say why. This peek used to discard the error, so a malformed line
+        // reached --bounds and --tune as the far less useful "needs an
+        // exponent in worktodo.txt" -- the diagnostic existed and was thrown
+        // away one frame from where it would have helped.
+        printf("%s\n", werr.c_str());
       }
     }
 

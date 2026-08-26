@@ -15,7 +15,7 @@
 // change that alters what a result MEANS, so a submitted result can be traced
 // to the code that produced it.
 inline constexpr const char* PROGRAM_NAME = "Mp_p-1_gpu";
-inline constexpr const char* PROGRAM_VERSION = "1.9";
+inline constexpr const char* PROGRAM_VERSION = "1.9.1";
 
 // What to do with the console window when the program exits.
 //   AUTO   hold only when launched by double-click, i.e. when closing would

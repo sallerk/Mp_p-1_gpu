@@ -5,6 +5,7 @@
 // SageMath's dickman_rho(). Values run from x = 2 in steps of 1/40.
 
 #include "Bounds.h"
+#include <stdexcept>
 
 #include <cassert>
 #include <cmath>
@@ -429,7 +430,7 @@ Bounds chooseBounds(double exponent, u32 factoredTo, double bias,
       if (fixedB2 && r != RATIOS[0]) { break; }
       if (b2 < b1) { b2 = b1; }
       // Stage 2's setup exponents are machine words, which caps m*D and so B2.
-      if (b2 > 4e9) { continue; }
+      if (b2 > STAGE2_B2_MAX) { continue; }
 
       double p1 = 0, p2 = 0;
       pm1Prob(exponent, factoredTo, b1, b2, p1, p2);
@@ -453,7 +454,16 @@ Bounds chooseBounds(double exponent, u32 factoredTo, double bias,
   }
 
   Bounds best;
-  if (cands.empty()) { return best; }
+  // An empty candidate set is not "no bounds are worth running" -- it means
+  // every candidate was discarded, which at this point can only be the
+  // b2 > STAGE2_B2_MAX filter above rejecting a caller-supplied fixedB2.
+  // Returning the default-constructed Bounds here handed back b1 = 0, and
+  // the caller ran a job with no stage 1 at all and reported "no factor".
+  // Refuse instead: a B2 the engine cannot represent is an input error.
+  if (cands.empty()) {
+    throw std::runtime_error("B2 above the maximum this program can run ("
+                             + std::to_string(u64(STAGE2_B2_MAX)) + ")");
+  }
 
   // The minimum, then the highest-yield point within `tolerance` of it. With
   // tolerance 0 the band holds only the minimum itself, so this reduces to the
@@ -506,7 +516,7 @@ Bounds choosePP1Bounds(double exponent, u32 factoredTo, double bias,
       if (b2 < b1) { b2 = b1; }
       // Same cap chooseBounds applies -- stage 2's setup exponents are
       // machine words, which bounds m*D and so B2.
-      if (b2 > 4e9) { continue; }
+      if (b2 > STAGE2_B2_MAX) { continue; }
 
       const bool haveS2 = b2 > b1;
 
@@ -537,7 +547,16 @@ Bounds choosePP1Bounds(double exponent, u32 factoredTo, double bias,
   }
 
   Bounds best;
-  if (cands.empty()) { return best; }
+  // An empty candidate set is not "no bounds are worth running" -- it means
+  // every candidate was discarded, which at this point can only be the
+  // b2 > STAGE2_B2_MAX filter above rejecting a caller-supplied fixedB2.
+  // Returning the default-constructed Bounds here handed back b1 = 0, and
+  // the caller ran a job with no stage 1 at all and reported "no factor".
+  // Refuse instead: a B2 the engine cannot represent is an input error.
+  if (cands.empty()) {
+    throw std::runtime_error("B2 above the maximum this program can run ("
+                             + std::to_string(u64(STAGE2_B2_MAX)) + ")");
+  }
 
   double floorCost = cands[0].expected;
   for (const Candidate& c : cands) { floorCost = std::min(floorCost, c.expected); }

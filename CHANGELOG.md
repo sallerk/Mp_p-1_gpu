@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.9.1
+
+**1.9's exponent fix was incomplete, and this completes it.** 1.9 guarded
+`parseKbnc`, which serves `Pfactor=`/`Pminus1=` lines. A **bare exponent**
+takes a different branch and still wrapped: `9993000001` on its own line
+became **M1403065409** and ran. The corpus added in 1.9 only ever exercised
+assignment lines, which is exactly why the gap survived the release that was
+meant to close it.
+
+**An out-of-range B2 silently became a run that did nothing.**
+`Pminus1=1,2,1000099,-1,100000,1e18` produced `B1 = 0`, no stage 2,
+"estimated P-1 success 0.000%", and completed -- writing a *no factor found*
+result for an assignment that had asked for real work. The cause was not the
+parser: `chooseBounds` discards every candidate above the machine-word cap
+(stage 2 forms `(m*D)^2` as a machine word), the candidate list came back
+empty, and `if (cands.empty()) { return best; }` handed the caller a
+default-constructed `Bounds` -- b1 = 0. Nothing checked. Reachable from
+config.txt's own `b2` as well as from an assignment, so it is fixed in both
+places: the cap now lives in one spot (`STAGE2_B2_MAX`, Bounds.h) and is
+validated at the parser, while `chooseBounds` and `choosePP1Bounds` throw
+instead of returning zeros.
+
+**Numeric fields no longer go through `strtod` where the value is used rather
+than checked.** `strtod` accepts far more than the format specifies, and every
+one of these was a live silent-wrong-answer path:
+
+- `1000099.7` rounded to a **different exponent**, M1000100, and ran.
+- `0x10` became M16; `1e9` became M1000000000.
+- `nan` defeated every range test -- NaN compares false against everything, so
+  `n < 3`, `n > 4294967295`, `b1 < 2` and `b2 < 2` all missed it -- and
+  arrived as **M0**, failing much later with "No FFT config passed
+  verification for M0" rather than naming the real problem.
+- `b = 1.6` and `b = 2.4` were both accepted as base 2, because the test was
+  `u64(b + 0.5) != 2`.
+
+The exponent now takes a strict decimal-integer parse, and the remaining
+range tests are written in positive form (`!(x >= lo && x <= hi)`) so NaN
+fails them instead of slipping through.
+
+**The exponent must now be prime, which nothing had ever checked.**
+`config.txt` has always said so. For composite `p`, every `d | p` gives an
+algebraic factor `2^d - 1` of `2^p - 1`, so a run against a mistyped exponent
+could "find" a factor and write it to `results.txt` as though it were a
+discovery.
+
+**Worktodo parse errors are no longer discarded by `--bounds` and `--tune`.**
+The peek that reads the queue for those modes threw the error away one frame
+from where it would have helped, so a malformed line surfaced as the far less
+useful "needs an exponent in worktodo.txt".
+
+**New self-test section N: 18 inputs that must be refused, each with a
+diagnostic.** Every entry is something that was once accepted and quietly
+turned into a different job. It lists the bare and assignment shapes side by
+side on purpose -- covering only one of them is what let the 1.9 gap through.
+A silently dropped line counts as a failure here, not just a wrong one.
+
 ## 1.9
 
 **Fixed a silent wrong-answer bug: a worktodo exponent above 2^32-1 wrapped

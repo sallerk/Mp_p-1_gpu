@@ -624,11 +624,18 @@ numbers.
   this exponent".
 - **Maximum exponent is 4294967295.** Exponents are held in a `u32`
   (`WorktodoEntry::exponent`, `Config::exponent`), so anything larger cannot
-  be represented at all. Since 1.9 the worktodo parser refuses such a line
-  with the exponent quoted back; before 1.9 it wrapped silently and ran a
-  different exponent, which is why this is now a self-tested limit rather
-  than an implicit one. In practice the transform catalog runs out well
+  be represented at all. The worktodo parser refuses such a line with the
+  exponent quoted back; before 1.9 it wrapped silently and ran a different
+  exponent, and 1.9 fixed only the `Pfactor=`/`Pminus1=` path -- a bare
+  exponent still wrapped until 1.9.1. Both shapes are covered by the
+  refusal tests now. In practice the transform catalog runs out well
   before the type does.
+- **The exponent must be prime.** `M_p = 2^p - 1` is only a GIMPS candidate
+  for prime `p`, and for composite `p` every `d | p` gives an algebraic
+  factor `2^d - 1` -- so a run against a mistyped composite exponent can
+  "find" a factor and report it as though it were a discovery. Enforced at
+  the parser since 1.9.1; before that nothing checked it, despite
+  config.txt having always said so.
 - **P+1 is a secondary mode.** Its yield per unit work is well below P-1's, so
   P-1 is the default; run it in earnest only once P-1 has been tried.
 - **`method = both` does not stop early across methods.** Finding a factor in

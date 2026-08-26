@@ -2,6 +2,7 @@
 
 #include "Worktodo.h"
 #include "Config.h"
+#include "Bounds.h"
 
 #include <cctype>
 #include <cmath>
@@ -118,43 +119,91 @@ string stripAid(string& value) {
 // stripped. Parses the shared k,b,n,c prefix both keywords require, validates
 // it describes a Mersenne number (this program factors nothing else), and
 // returns the remaining fields for the caller's keyword-specific tail.
+// A plain decimal integer, for the fields where strtod's flexibility is a
+// hazard rather than a convenience. Before 1.9.1 every numeric field went
+// through strtod, which accepts far more than the format specifies:
+// "1000099.7" rounded to a DIFFERENT exponent (M1000100) and ran, "0x10"
+// became M16, "1e9" became M1000000000, and "nan" defeated every range check
+// (NaN compares false against everything) to arrive as M0. Underscores are
+// tolerated as digit separators, matching config.txt's own convention;
+// nothing else is. Prime95 and AutoPrimeNet always write plain integers here,
+// so this is stricter without being incompatible.
+bool parseExactU64(const string& s, u64& out) {
+  string d;
+  for (char c : s) { if (c != '_') { d += c; } }
+  if (d.empty() || d.find_first_not_of("0123456789") != string::npos) { return false; }
+  u64 v = 0;
+  for (char c : d) {
+    const u64 digit = u64(c - '0');
+    if (v > (~0ull - digit) / 10) { return false; }   // would overflow u64
+    v = v * 10 + digit;
+  }
+  out = v;
+  return true;
+}
+
+// M_p is only a GIMPS candidate for prime p, and config.txt has always said
+// so -- but nothing enforced it until 1.9.1, so a typo'd composite exponent
+// ran to completion. That is not merely wasted time: for composite p every
+// d | p contributes an algebraic factor 2^d - 1 of 2^p - 1, so such a run can
+// "find" a factor and write it to results.txt as though it were a discovery.
+// Trial division is instant at u32 range (at most ~65536 steps).
+bool isPrimeExponent(u64 n) {
+  if (n < 2) { return false; }
+  if (n % 2 == 0) { return n == 2; }
+  for (u64 d = 3; d * d <= n; d += 2) {
+    if (n % d == 0) { return false; }
+  }
+  return true;
+}
+
+// Shared by both entry shapes: the exponent must be a plain integer, in range,
+// and prime. `what` is the raw token, quoted back in every message so a bad
+// line names itself.
+bool validateExponent(const string& what, u32 lineNo, u64 n, u32& exponent, string& err) {
+  const string where = "worktodo.txt line " + to_string(lineNo) + ": exponent " + what;
+  if (n < 3) { err = where + " is too small"; return false; }
+  if (n > 4294967295ull) {
+    err = where + " is above this program's limit of 4294967295";
+    return false;
+  }
+  if (!isPrimeExponent(n)) {
+    err = where + " is not prime (M_p = 2^p - 1 is only a candidate for prime p)";
+    return false;
+  }
+  exponent = u32(n);
+  return true;
+}
+
 bool parseKbnc(const vector<string>& f, u32 lineNo, u32& exponent, string& err) {
   if (f.size() < 4) {
     err = "worktodo.txt line " + to_string(lineNo) + ": expected k,b,n,c fields";
     return false;
   }
-  // k, b, n, c all parsed via double then range/value-checked, same approach
-  // Prime95's own atof-then-cast takes -- b/n are unsigned in practice, c is
-  // signed (-1 for a Mersenne number), k is always exactly 1.0 here.
-  double k = 0, b = 0, n = 0, c = 0;
+  // k, b and c stay on the strtod path -- they are compared against exact
+  // constants below, so a surprising parse is rejected rather than acted on.
+  // n does NOT: it is the one field whose value is used rather than checked,
+  // so it gets the strict integer parse. See parseExactU64.
+  double k = 0, b = 0, c = 0;
+  u64 n = 0;
   if (!parseDoubleField(f[0], k) || !parseDoubleField(f[1], b)
-      || !parseDoubleField(f[2], n) || !parseDoubleField(f[3], c)) {
+      || !parseDoubleField(f[3], c)) {
     err = "worktodo.txt line " + to_string(lineNo) + ": malformed k,b,n,c";
     return false;
   }
-  if (k != 1.0 || u64(b + 0.5) != 2 || c != -1.0) {
+  if (!parseExactU64(f[2], n)) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": exponent " + f[2]
+        + " is not a plain decimal integer";
+    return false;
+  }
+  // Written as a range test, not "b + 0.5 != 2": u64(b + 0.5) accepted
+  // anything in [1.5, 2.5) as base 2, and NaN reached the cast at all.
+  if (k != 1.0 || !(b >= 2.0 && b <= 2.0) || c != -1.0) {
     err = "worktodo.txt line " + to_string(lineNo) + ": k=" + f[0] + " b=" + f[1]
         + " c=" + f[3] + " is not a Mersenne number (this program only factors M_p = 2^p - 1)";
     return false;
   }
-  if (n < 3) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": exponent " + f[2] + " is too small";
-    return false;
-  }
-    // There was no upper bound here before 1.9, and the cast below wrapped in
-  // silence: a Pfactor= line for 9993000001 became M1403065409 and ran to
-  // completion, writing a results.txt entry for a Mersenne number nobody
-  // asked about. Exactly the failure this project refuses everywhere else --
-  // a wrong answer that looks right. Exponents above 2^32-1 cannot be held at
-  // all (WorktodoEntry::exponent and Config::exponent are both u32), so this
-  // is a representational limit, not a policy choice.
-  if (n > 4294967295.0) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": exponent " + f[2]
-        + " is above this program's limit of 4294967295";
-    return false;
-  }
-  exponent = u32(n + 0.5);
-  return true;
+  return validateExponent(f[2], lineNo, n, exponent, err);
 }
 
 bool parsePfactor(string value, u32 lineNo, WorktodoEntry& out, string& err) {
@@ -205,8 +254,21 @@ bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
     return false;
   }
   double b1 = 0, b2 = 0;
-  if (!parseDoubleField(f[4], b1) || !parseDoubleField(f[5], b2) || b1 < 2 || b2 < 2) {
+  if (!parseDoubleField(f[4], b1) || !parseDoubleField(f[5], b2)
+      || !(b1 >= 2) || !(b2 >= 2)) {
     err = "worktodo.txt line " + to_string(lineNo) + ": malformed B1/B2";
+    return false;
+  }
+  // Positive-form range tests above, and an explicit ceiling here. "b1 < 2"
+  // let NaN straight through (NaN < 2 is false), and an out-of-range B2 was
+  // worse than useless: chooseBounds discards every candidate above 4e9, its
+  // candidate list comes back empty, and the default-constructed Bounds it
+  // then returns means B1 = 0 -- a run that does no stage 1 at all and
+  // reports "no factor" for an assignment that asked for real work.
+  if (!(b2 <= STAGE2_B2_MAX)) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": B2 " + f[5]
+        + " is above this program's limit of " + to_string(u64(STAGE2_B2_MAX))
+        + " (stage 2's setup exponents must fit a machine word)";
     return false;
   }
   out.assignedB1 = u64(b1 + 0.5);
@@ -265,12 +327,12 @@ bool parseWorktodoLine(const string& t, u32 lineNo, WorktodoEntry& out, string& 
   const size_t eq = t.find('=');
   if (eq == string::npos) {
     u64 n = 0;
-    if (!parseNumber(t, n) || n < 3) {
-      err = "worktodo.txt line " + to_string(lineNo) + ": '" + t + "' is not a valid exponent (>= 3)";
+    if (!parseExactU64(t, n)) {
+      err = "worktodo.txt line " + to_string(lineNo) + ": '" + t
+          + "' is not a plain decimal integer";
       return false;
     }
-    out.exponent = u32(n);
-    return true;
+    return validateExponent(t, lineNo, n, out.exponent, err);
   }
 
   const string key = lower(trim(t.substr(0, eq)));
@@ -760,6 +822,64 @@ int runWorktodoTests() {
     printf("     %s  %u in-range parsed, %u over-range refused (of %zu)\n",
            allOk ? "PASS" : "FAIL", accepted, refused,
            sizeof(CORPUS) / sizeof(CORPUS[0]));
+  }
+
+  printf("\n  N. inputs that must be REFUSED, not reinterpreted\n");
+  {
+    // Every entry here was, at some point, accepted and silently turned into a
+    // different job. The bare-integer shape is listed alongside the assignment
+    // shape on purpose: 1.9 guarded parseKbnc and shipped with the bare path
+    // still wrapping, because the corpus above only ever exercised Pfactor=.
+    struct Bad { const char* line; const char* why; };
+    static const Bad BAD[] = {
+      // over-range exponent -- used to wrap modulo 2^32
+      { "9993000001",                              "bare: 9993000001 -> M1403065409" },
+      { "Pfactor=1,2,9993000001,-1,96,2",          "Pfactor: same wrap" },
+      { "Pminus1=1,2,4294967357,-1,100000,2000000","Pminus1: 4294967357 -> M61" },
+      // non-integer exponent -- used to round to a different exponent
+      { "1000099.7",                               "bare: rounds to M1000100" },
+      { "Pfactor=1,2,1000099.7,-1,74,2",           "Pfactor: rounds to M1000100" },
+      { "1e9",                                     "bare: strtod exponent form" },
+      { "0x10",                                    "bare: strtod hex form" },
+      { "Pfactor=1,2,0x10,-1,74,2",                "Pfactor: strtod hex form" },
+      // NaN -- compares false against every bound, so every range test missed it
+      { "Pfactor=1,2,nan,-1,74,2",                 "NaN exponent -> M0" },
+      { "Pminus1=1,2,1000099,-1,nan,2000000",      "NaN B1" },
+      { "Pminus1=1,2,1000099,-1,100000,nan",       "NaN B2 -> B1 = 0 run" },
+      // composite exponent -- 2^p-1 has algebraic factors, so a run can
+      // "find" one and report it as a discovery
+      { "1000100",                                 "bare: composite exponent" },
+      { "Pfactor=1,2,1000100,-1,74,2",             "Pfactor: composite exponent" },
+      { "Pfactor=1,2,86244,-1,74,2",               "Pfactor: composite exponent" },
+      // B2 the stage-2 engine cannot represent -- used to yield B1 = 0 and a
+      // completed "no factor" result for an assignment that asked for work
+      { "Pminus1=1,2,1000099,-1,100000,1e18",      "B2 above the machine-word cap" },
+      { "Pminus1=1,2,1000099,-1,100000,5000000000","B2 just above the cap" },
+      // base that is not 2 -- u64(b + 0.5) accepted anything in [1.5, 2.5)
+      { "Pfactor=1,2.4,1000099,-1,74,2",           "b=2.4 rounded to base 2" },
+      { "Pfactor=1,1.6,1000099,-1,74,2",           "b=1.6 rounded to base 2" },
+    };
+    bool allOk = true;
+    for (const Bad& b : BAD) {
+      writeRaw(TEST_FILE, string(b.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      const bool parsed = loadWorktodo(TEST_FILE, out, err) && !out.empty();
+      // Refusal must also SAY something -- a silently dropped line is how
+      // several of these hid for as long as they did.
+      const bool ok = !parsed && !err.empty();
+      if (!ok) {
+        allOk = false;
+        if (parsed) {
+          printf("  FAIL accepted '%s' as M%u (%s)\n", b.line, out[0].exponent, b.why);
+        } else {
+          printf("  FAIL refused '%s' with no diagnostic (%s)\n", b.line, b.why);
+        }
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  %zu malformed/out-of-range inputs each refused with a reason\n",
+           allOk ? "PASS" : "FAIL", sizeof(BAD) / sizeof(BAD[0]));
   }
 
   printf("\n%s\n", fails ? "worktodo: FAILED" : "worktodo: all tests passed");
