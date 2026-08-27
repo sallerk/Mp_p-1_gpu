@@ -330,6 +330,42 @@ void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
   fclose(f);
 }
 
+// A factor the assignment itself already declared (Worktodo.h's known_factors)
+// is not a discovery. Its k is B1-smooth by construction -- that is why it is
+// on file -- so it drops out of the stage-1 gcd of any run whose bounds reach
+// it, every single time. Left alone it ended the job as a "factor found",
+// skipped the stage 2 the assignment had asked for, and wrote a status "F"
+// line submitting a factor PrimeNet has held for years. Prime95 avoids the
+// question by dividing known factors out of the number before it starts; this
+// program factors M_p whole, so it drops them from the result instead --
+// clearing foundFactor with them, so the run carries on looking for something
+// new rather than stopping on an old one.
+bool isKnownFactor(const Config& cfg, const FoundFactor& ff) {
+  const std::string d = ff.value.dec();
+  for (const std::string& k : cfg.knownFactors) { if (k == d) { return true; } }
+  return false;
+}
+
+// Every stage result of both methods has the same two members, and every one
+// of them can rediscover a known factor.
+template <typename Result>
+void dropKnownFactors(const Config& cfg, Result& res) {
+  if (cfg.knownFactors.empty() || !res.foundFactor) { return; }
+  std::vector<FoundFactor> keep;
+  for (const FoundFactor& ff : res.factors) {
+    if (isKnownFactor(cfg, ff)) {
+      log("  M%u: %s is already a known factor of this assignment --\n"
+          "      rediscovered, not discovered, so it is not reported as a find\n"
+          "      and does not end the run.\n",
+          cfg.exponent, ff.value.dec().c_str());
+    } else {
+      keep.push_back(ff);
+    }
+  }
+  res.factors.swap(keep);
+  res.foundFactor = !res.factors.empty();
+}
+
 // Console AND log reporting -- this is the single most important line an
 // unattended run produces, so it goes through log() rather than printf(),
 // unlike most of this file's routine progress output. Separate from the
@@ -554,6 +590,22 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   const u64 pp1B1 = pp1Bounds.b1;
   const bool wantPp1Stage2 = cfg.doPP1 && cfg.stage2Mode != STAGE2_OFF && pp1Bounds.b2 > pp1B1;
 
+  // See STAGE2_MIN_B1. The smallest pairing shape cannot walk primes at or
+  // below w*D/2 = 105, and buildStage2Plan says so by throwing -- from inside
+  // stage 2, which is to say after stage 1 has already run to completion, and
+  // again on every restart because the entry is still queued. Worktodo.cpp
+  // refuses an assigned B1 under that floor when it parses the line; this is
+  // the same refusal for config.txt's own b1, and for P+1's B1, which comes
+  // from a different model and so has to be checked separately. Auto-chosen
+  // bounds never come near it (the candidate ladder starts at 10000), so this
+  // can only fire on a b1 someone pinned by hand.
+  if ((runStage2 && b1 < STAGE2_MIN_B1) || (wantPp1Stage2 && pp1B1 < STAGE2_MIN_B1)) {
+    const u64 tooSmall = runStage2 && b1 < STAGE2_MIN_B1 ? b1 : pp1B1;
+    throw std::runtime_error(
+        "B1 = " + std::to_string(tooSmall) + " is below " + std::to_string(STAGE2_MIN_B1)
+        + ", the smallest B1 stage 2 can pair against -- raise b1, or set stages = 1");
+  }
+
   // The shape above was sized against a GUESS (cfg.b1, or 100000 when b1 is
   // auto) because the real B1s aren't known until chooseBounds/choosePP1Bounds
   // run, and those need the shape's mulsPerPrime first. A small exponent or
@@ -663,6 +715,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
         log("\n  interrupted; P+1 progress for seed %u is checkpointed.\n", seed);
         return 1;
       }
+      dropKnownFactors(cfg, pr);
       if (pr.foundFactor) {
         anyFactor = true;
         reportFactors(cfg, pr.factors, pp1B1, pp1B1, "P+1", seed);
@@ -679,6 +732,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
           log("\n  interrupted during P+1 stage 2 for seed %u; resume by running again.\n", seed);
           return 1;
         }
+        dropKnownFactors(cfg, s2);
         if (s2.foundFactor) {
           anyFactor = true;
           reportFactors(cfg, s2.factors, pp1B1, pp1Bounds.b2, "P+1", seed);
@@ -743,6 +797,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // its result is not in yet, so this waits until after stage 2 -- announcing
   // "no factor found with B1" here would be a guess, not a result.
   if (!overlapGcd) {
+    dropKnownFactors(cfg, r);
     printf("\n");
     if (r.foundFactor) {
       reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", 0);
@@ -801,6 +856,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     }
 
     printf("\n");
+    dropKnownFactors(cfg, r);
     if (r.foundFactor) {
       // Stage 1 had it all along. Whatever stage 2 computed meanwhile is
       // discarded -- that is the losing side of the bet, and it still ends
@@ -826,6 +882,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       log("  interrupted during stage 2; resume by running again.\n");
       return 1;
     }
+    dropKnownFactors(cfg, s2);
     if (s2.foundFactor) {
       reportFactors(cfg, s2.factors, b1, bounds.b2, "P-1", 0);
     } else {

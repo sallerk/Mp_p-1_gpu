@@ -90,6 +90,16 @@ struct Stage2Plan {
 extern const u32 STAGE2_D_CANDIDATES[];
 extern const size_t STAGE2_D_COUNT;
 
+// The smallest B1 any stage 2 can run at. buildStage2Plan requires
+// w*D/2 <= B1 -- every prime it walks must exceed j, or the m*D +- j
+// decomposition stops being well defined -- and the smallest shape available
+// is D = 210, w = 1. Below this, stage 2 is not slow, it is impossible, and
+// the throw arrives only after stage 1 has already run to completion.
+// Worktodo.cpp refuses an assigned B1 under it up front; runOneJob does the
+// same for config.txt's. Asserted against STAGE2_D_CANDIDATES[0] by the
+// stage-2 self-test, so reordering that list cannot silently invalidate it.
+inline constexpr u64 STAGE2_MIN_B1 = 210 / 2;
+
 // The number of T_j buffers (d, w) needs: the count of j in (0, w*d/2) coprime
 // to d. Exactly phi(d)*w/2 for odd w.
 u32 stage2NumJ(u32 d, u32 w = 1);

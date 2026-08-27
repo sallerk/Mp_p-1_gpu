@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.9.2
+
+**Four more ways a worktodo.txt line could produce a wrong reported value,
+found by auditing the file against 1.9.1 rather than against 1.9.**
+
+**A line longer than 1023 bytes was silently split into two entries.** Both
+the load and the consume loop read with `fgets(buf, 1024, f)`, which returns
+the tail of a longer line as though it were the next line. A comment of 2009
+bytes whose tail happened to be digits queued **M1000003 -- an exponent that
+appeared nowhere in the file** -- and wrote its result to results.txt under
+it. Consuming that phantom was worse: the truncated head went back to disk
+without the newline it never had, gluing the next real entry onto the end of
+a comment and dropping it from the queue with nothing said. The realistic
+trigger is a `Pminus1=` line whose `"known_factors"` list runs past the
+buffer. Both loops now share one whole-line reader, so their line numbering
+and what consume copies through cannot disagree.
+
+**Known factors were never checked against M_p.** They were validated as
+decimal digits, then echoed verbatim into results.txt as `"known-factors"` --
+a claim about M_p that PrimeNet reads -- and that echo was the *only* thing
+the program ever did with them, so a typo had nothing downstream that could
+notice. `Pfactor=1,2,1000003,-1,70,1.5,"123456789"` was accepted without
+complaint. Each entry is now verified with `2^p == 1 (mod f)`, the same test
+already applied to every factor this program reports on its own account.
+
+**A known factor found again was reported as a discovery.** A listed factor's
+`k` is B1-smooth by construction -- that is why it is on file -- so it comes
+out of the stage-1 gcd of every run whose bounds reach it. That ended the
+job as "factor found", skipped the stage 2 the assignment had asked for, and
+submitted a status `F` line for a factor PrimeNet has held for years. A real
+case: M4444091 with its two smallest factors declared known used to stop at
+stage 1 and report both; it now reports them as rediscovered, runs stage 2,
+and finds **636358278473**, which the old behavior never reached at all. If
+nothing new turns up the result is `NF`, with the known factors still echoed.
+
+**An assigned B1 below 105 aborted the job after stage 1 had finished.**
+A `Pminus1=` line always asks for a stage 2, and the smallest pairing shape
+(D=210, w=1) cannot walk primes at or below `w*D/2`; `buildStage2Plan` throws
+-- from inside stage 2, an hour in, and again on every restart, because the
+entry is still queued. The floor is now a named constant (`STAGE2_MIN_B1`,
+asserted by the stage-2 self-test to track `STAGE2_D_CANDIDATES[0]`) and is
+refused at parse time for an assignment, and before any work for a `b1`
+pinned by hand in config.txt.
+
+Three new self-test sections (`--selftest=worktodo` O, P, Q) cover the buffer
+boundary in both loops, eight known-factor lists accepted or refused on
+divisibility, and the B1 floor. Sections F, G and I had to be fixed to land
+them: their known-factor fixtures were written against exponent 86243, which
+is a Mersenne **prime** and therefore has no factors at all. Invented values,
+invisible while nothing checked them. They now use real factors of M4444091.
+
 ## 1.9.1
 
 **1.9's exponent fix was incomplete, and this completes it.** 1.9 guarded

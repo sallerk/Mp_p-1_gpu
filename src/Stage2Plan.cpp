@@ -477,6 +477,21 @@ int runStage2PlanTests() {
   printf("stage-2 plan self-test\n");
   int fails = 0;
 
+  // STAGE2_MIN_B1 is the floor Worktodo.cpp and runOneJob both refuse a B1
+  // below, and it is written as a literal because the candidate list is not
+  // constexpr. Tie the two together here, so reordering STAGE2_D_CANDIDATES
+  // cannot silently move the real floor away from the advertised one.
+  {
+    const bool ok = STAGE2_MIN_B1 == STAGE2_D_CANDIDATES[0] / 2;
+    if (!ok) {
+      ++fails;
+      printf("  FAIL STAGE2_MIN_B1 = %llu but the smallest D is %u\n",
+             (unsigned long long) STAGE2_MIN_B1, STAGE2_D_CANDIDATES[0]);
+    }
+    printf("     %s  STAGE2_MIN_B1 (%llu) is the smallest shape's D/2\n",
+           ok ? "PASS" : "FAIL", (unsigned long long) STAGE2_MIN_B1);
+  }
+
   printf("\n  correctness audit, B1=100K B2=3M\n");
   for (u32 d : {210u, 420u, 2310u}) {
     for (u32 w : {1u, 3u, 5u}) { fails += checkPlan(100000, 3000000, d, w, true); }

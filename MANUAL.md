@@ -169,6 +169,26 @@ An assignment ID and known factors, when present, are echoed back into
 `results.txt` (see **Results**, below) so AutoPrimeNet's own upload step
 sees what it expects.
 
+Two fields on that line are checked rather than taken on trust, because both
+end up in `results.txt` as claims about M_p:
+
+- **A known factor must actually divide M_p.** Every entry in the
+  `"known_factors"` list is verified with `2^p == 1 (mod f)` before the line
+  is accepted. A typo'd or mismatched factor is a hard error naming the
+  factor, not a line quietly echoed on to PrimeNet as fact.
+- **An assigned `B1` must be at least 105.** A `Pminus1=` line always asks
+  for a stage 2, and the smallest pairing shape (`D=210, w=1`) cannot walk
+  primes at or below `w*D/2`. Below that the job is impossible rather than
+  merely small, so the line is refused as it is read instead of throwing once
+  stage 1 has already run to completion. The same floor applies to an
+  explicit `b1` in `config.txt` whenever a stage 2 is going to run.
+
+A known factor that the run rediscovers — and it will rediscover it every
+time, since a listed factor's `k` is B1-smooth by construction — is reported
+as exactly that. It does not end the job, it does not appear in `factors`,
+and it does not stop stage 2 from looking for something new: the run carries
+on, and reports `NF` if nothing else turns up.
+
 One thing an assignment can carry that this program cannot use yet:
 `Pminus1=`'s optional `B2_start`, meaning stage 2 was already partly walked
 elsewhere. There is no local checkpoint to seed that partial progress from

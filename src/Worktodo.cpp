@@ -1,8 +1,10 @@
 // Copyright (C) Mp_p-1_gpu
 
 #include "Worktodo.h"
+#include "BigInt.h"
 #include "Config.h"
 #include "Bounds.h"
+#include "Stage2Plan.h"
 
 #include <cctype>
 #include <cmath>
@@ -35,8 +37,29 @@ string lower(string s) {
 // does not end in '\n', which is fine for a machine-written file like
 // tune.txt but wrong here -- worktodo.txt is hand-edited, and a text editor
 // not adding a trailing newline to the last line is routine, not an error.
-string stripEol(const char* buf) {
-  string raw = buf;
+//
+// One WHOLE line, terminator and all, however long. A plain
+// fgets(buf, 1024, f) stops at its buffer and hands the remainder back as
+// though it were the next line, which both loops below then parsed as an
+// entry in its own right: a comment longer than 1023 bytes whose tail
+// happened to be digits queued an exponent that appears nowhere in the file
+// and wrote its result to results.txt under that exponent. Consuming the
+// phantom was worse -- the truncated head went back without the newline it
+// never had, gluing the next real entry onto the end of a comment and
+// dropping it from the queue with nothing said. Both loops share this, so
+// their line numbering and what consume copies through cannot disagree.
+bool readRawLine(FILE* f, string& raw) {
+  raw.clear();
+  char buf[1024];
+  while (fgets(buf, sizeof(buf), f)) {
+    raw += buf;
+    if (!raw.empty() && raw.back() == '\n') { return true; }
+  }
+  return !raw.empty();   // last line, no trailing newline: still a line
+}
+
+string stripEol(const string& line) {
+  string raw = line;
   while (!raw.empty() && (raw.back() == '\n' || raw.back() == '\r')) { raw.pop_back(); }
   return raw;
 }
@@ -74,8 +97,9 @@ bool parseDoubleField(const string& s, double& out) {
 bool isQuoted(const string& s) { return !s.empty() && s[0] == '"'; }
 
 // "12345,67890" (quotes included, as splitTopLevel leaves them) -> the two
-// factor strings, trimmed, validated as non-empty decimal integers.
-bool parseKnownFactors(const string& field, vector<string>& out, string& what) {
+// factor strings, trimmed, validated as decimal integers that actually
+// divide M_p.
+bool parseKnownFactors(const string& field, u32 exponent, vector<string>& out, string& what) {
   if (field.size() < 2 || field.back() != '"') { what = "unterminated known-factors quote"; return false; }
   const string inner = field.substr(1, field.size() - 2);
   size_t pos = 0;
@@ -84,6 +108,18 @@ bool parseKnownFactors(const string& field, vector<string>& out, string& what) {
     const string one = trim(inner.substr(pos, comma == string::npos ? string::npos : comma - pos));
     if (one.empty() || one.find_first_not_of("0123456789") != string::npos) {
       what = "known-factors entry '" + one + "' is not a decimal integer";
+      return false;
+    }
+    // Being made of digits is not enough. This list is echoed verbatim into
+    // results.txt as "known-factors", where it is a CLAIM about M_p that
+    // PrimeNet reads -- and it is the ONLY thing the program does with it, so
+    // a typo here had nothing downstream that could notice. 2^p == 1 (mod f)
+    // is exactly "f divides 2^p - 1"; it costs microseconds, and it is the
+    // same test PM1.cpp's describe() already applies to every factor this
+    // program reports on its own account.
+    Nat f;
+    if (!fromDecimal(one, f) || f < Nat(3) || !powMod(Nat(2), Nat(exponent), f).isOne()) {
+      what = "known factor " + one + " does not divide M" + to_string(exponent);
       return false;
     }
     out.push_back(one);
@@ -237,7 +273,7 @@ bool parsePfactor(string value, u32 lineNo, WorktodoEntry& out, string& err) {
       return false;
     }
     string what;
-    if (!parseKnownFactors(f[6], out.knownFactors, what)) {
+    if (!parseKnownFactors(f[6], out.exponent, out.knownFactors, what)) {
       err = "worktodo.txt line " + to_string(lineNo) + ": " + what;
       return false;
     }
@@ -279,6 +315,19 @@ bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
   }
   out.hasAssignedBounds = true;
 
+  // A Pminus1= line always asks for a stage 2 (B2 > B1 is enforced just
+  // above), and stage 2's pairing needs every prime it walks to exceed w*D/2
+  // -- with the smallest shape this program has, D = 210 and w = 1, that
+  // floor is 105. An assigned B1 under it is not a small job but an
+  // impossible one: buildStage2Plan throws, and it throws only once stage 1
+  // has already run to completion, leaving the entry queued to fail the same
+  // way on every restart. Refuse it here, where the line can name itself.
+  if (out.assignedB1 < STAGE2_MIN_B1) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": B1 " + f[4]
+        + " is below " + to_string(STAGE2_MIN_B1) + ", the smallest B1 stage 2 can pair against";
+    return false;
+  }
+
   // The optional tail (sieve_depth, B2_start, known_factors) is POSITIONAL,
   // not tagged -- each of the first two slots is consumed whether or not its
   // value passes its own sanity check, which is what lets Prime95 (and this
@@ -308,7 +357,7 @@ bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
       return false;
     }
     string what;
-    if (!parseKnownFactors(f[cursor], out.knownFactors, what)) {
+    if (!parseKnownFactors(f[cursor], out.exponent, out.knownFactors, what)) {
       err = "worktodo.txt line " + to_string(lineNo) + ": " + what;
       return false;
     }
@@ -351,11 +400,11 @@ bool loadWorktodo(const string& path, vector<WorktodoEntry>& out, string& err) {
   FILE* f = fopen(path.c_str(), "r");
   if (!f) { return true; }   // no file yet == empty queue, not an error
 
-  char buf[1024];
+  string raw;
   u32 lineNo = 0;
-  while (fgets(buf, sizeof(buf), f)) {
+  while (readRawLine(f, raw)) {
     ++lineNo;
-    const string t = trim(stripEol(buf));
+    const string t = trim(stripEol(raw));
     if (t.empty() || t[0] == '#') { continue; }
 
     WorktodoEntry entry;
@@ -382,11 +431,11 @@ bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string
   FILE* fo = fopen(tmp.c_str(), "w");
   if (!fo) { fclose(fi); err = "cannot open " + tmp; return false; }
 
-  char buf[1024];
+  string raw;
   u32 lineNo = 0;
   bool removed = false;
   bool ok = true;
-  while (fgets(buf, sizeof(buf), fi)) {
+  while (readRawLine(fi, raw)) {
     ++lineNo;
     if (lineNo == entry.lineNo) {
       // Confirm this is still the entry we loaded before dropping it -- the
@@ -395,7 +444,7 @@ bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string
       // through unchanged instead of removing it.
       WorktodoEntry reread;
       string perr;
-      const string t = trim(stripEol(buf));
+      const string t = trim(stripEol(raw));
       const bool sameEntry = !t.empty() && t[0] != '#'
           && parseWorktodoLine(t, lineNo, reread, perr)
           && reread.exponent == entry.exponent
@@ -405,7 +454,7 @@ bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string
         continue;
       }
     }
-    if (fputs(buf, fo) == EOF) { ok = false; }
+    if (fwrite(raw.data(), 1, raw.size(), fo) != raw.size()) { ok = false; }
   }
   fclose(fi);
   fclose(fo);
@@ -529,12 +578,16 @@ int runWorktodoTests() {
 
   printf("\n  F. Pfactor= round-trip (AID, known-factors, both, neither)\n");
   {
+    // The exponent here used to be 86243 -- which is a Mersenne PRIME, so
+    // every known-factors fixture written against it was necessarily made
+    // up. That was harmless while nothing checked them and wrong the moment
+    // something did. M4444091 is composite and these are real factors of it.
     struct Case { const char* line; bool wantAid; bool wantKF; };
     const Case cases[] = {
-      {"Pfactor=1,2,86243,-1,74.5,1.30", false, false},
-      {"Pfactor=AABBCCDD00112233445566778899AABB,1,2,86243,-1,74.5,1.30", true, false},
-      {"Pfactor=1,2,86243,-1,74.5,1.30,\"170141183460469231731687303715884105727\"", false, true},
-      {"Pfactor=AABBCCDD00112233445566778899AABB,1,2,86243,-1,74.5,1.30,\"123,456\"", true, true},
+      {"Pfactor=1,2,4444091,-1,74.5,1.30", false, false},
+      {"Pfactor=AABBCCDD00112233445566778899AABB,1,2,4444091,-1,74.5,1.30", true, false},
+      {"Pfactor=1,2,4444091,-1,74.5,1.30,\"636358278473\"", false, true},
+      {"Pfactor=AABBCCDD00112233445566778899AABB,1,2,4444091,-1,74.5,1.30,\"8888183,319974553\"", true, true},
     };
     bool allOk = true;
     for (const Case& c : cases) {
@@ -542,7 +595,7 @@ int runWorktodoTests() {
       vector<WorktodoEntry> out;
       string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
-          && out[0].exponent == 86243 && out[0].hasFactoredTo && out[0].factoredTo == 74
+          && out[0].exponent == 4444091 && out[0].hasFactoredTo && out[0].factoredTo == 74
           && out[0].testsSaved > 1.29 && out[0].testsSaved < 1.31
           && (!c.wantAid || out[0].aid == "AABBCCDD00112233445566778899AABB")
           && (c.wantAid  || out[0].aid.empty())
@@ -558,14 +611,14 @@ int runWorktodoTests() {
   {
     bool allOk = true;
 
-    writeRaw(TEST_FILE, "Pminus1=1,2,86243,-1,50000,3000000\n");
+    writeRaw(TEST_FILE, "Pminus1=1,2,4444091,-1,50000,3000000\n");
     { vector<WorktodoEntry> out; string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
           && out[0].hasAssignedBounds && out[0].assignedB1 == 50000 && out[0].assignedB2 == 3000000
           && !out[0].hasFactoredTo && out[0].b2Start == 0;
       if (!ok) { allOk = false; printf("  FAIL Pminus1 bare: %s\n", err.c_str()); } }
 
-    writeRaw(TEST_FILE, "Pminus1=1,2,86243,-1,50000,3000000,74.0\n");
+    writeRaw(TEST_FILE, "Pminus1=1,2,4444091,-1,50000,3000000,74.0\n");
     { vector<WorktodoEntry> out; string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
           && out[0].hasFactoredTo && out[0].factoredTo == 74 && out[0].b2Start == 0;
@@ -578,7 +631,7 @@ int runWorktodoTests() {
     // b2Start stays 0. This is upstream's real, if surprising, behavior --
     // an AutoPrimeNet-written line never omits sieve_depth while giving
     // B2_start, so this shape should not occur in practice.
-    writeRaw(TEST_FILE, "Pminus1=1,2,86243,-1,50000,3000000,3100000\n");
+    writeRaw(TEST_FILE, "Pminus1=1,2,4444091,-1,50000,3000000,3100000\n");
     { vector<WorktodoEntry> out; string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
           && !out[0].hasFactoredTo && out[0].b2Start == 0;
@@ -587,23 +640,23 @@ int runWorktodoTests() {
     // Same slot, but a value a real typo could plausibly produce (200, not
     // an astronomical B2_start-shaped number) -- still > 127, still fails
     // sieve_depth, still discarded rather than misread as something else.
-    writeRaw(TEST_FILE, "Pminus1=1,2,86243,-1,50000,3000000,200\n");
+    writeRaw(TEST_FILE, "Pminus1=1,2,4444091,-1,50000,3000000,200\n");
     { vector<WorktodoEntry> out; string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
           && !out[0].hasFactoredTo && out[0].b2Start == 0;
       if (!ok) { allOk = false; printf("  FAIL Pminus1 mid-range value in sieve-slot: %s\n", err.c_str()); } }
 
     writeRaw(TEST_FILE,
-             "Pminus1=AABBCCDD00112233445566778899AABB,1,2,86243,-1,50000,3000000,74.0,3100000,\"12345\"\n");
+             "Pminus1=AABBCCDD00112233445566778899AABB,1,2,4444091,-1,50000,3000000,74.0,3100000,\"636358278473\"\n");
     { vector<WorktodoEntry> out; string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
           && out[0].aid == "AABBCCDD00112233445566778899AABB"
           && out[0].hasFactoredTo && out[0].factoredTo == 74
           && out[0].b2Start == 3100000 && out[0].knownFactors.size() == 1
-          && out[0].knownFactors[0] == "12345";
+          && out[0].knownFactors[0] == "636358278473";
       if (!ok) { allOk = false; printf("  FAIL Pminus1 full: %s\n", err.c_str()); } }
 
-    writeRaw(TEST_FILE, "Pminus1=1,2,86243,-1,50000,3000000,74.0,40000\n");
+    writeRaw(TEST_FILE, "Pminus1=1,2,4444091,-1,50000,3000000,74.0,40000\n");
     { vector<WorktodoEntry> out; string err;
       const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1 && out[0].b2Start == 0;
       if (!ok) { allOk = false; printf("  FAIL Pminus1 B2_start<=B1 discarded: %s\n", err.c_str()); } }
@@ -639,9 +692,9 @@ int runWorktodoTests() {
       "Pminus1=2,2,86243,-1,50000,3000000",              // k != 1
       "Pminus1=1,3,86243,-1,50000,3000000",               // b != 2
       "Pminus1=1,2,86243,1,50000,3000000",                // c != -1
-      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345",            // unterminated quote
-      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345,abc\"",      // non-decimal entry
-      "Pfactor=1,2,86243,-1,74.0,1.3,\"12345,,67890\"",   // empty entry between two valid ones
+      "Pfactor=1,2,4444091,-1,74.0,1.3,\"8888183",       // unterminated quote
+      "Pfactor=1,2,4444091,-1,74.0,1.3,\"8888183,abc\"",  // non-decimal entry
+      "Pfactor=1,2,4444091,-1,74.0,1.3,\"8888183,,319974553\"",  // empty entry between two real ones
     };
     for (const char* line : bad) {
       writeRaw(TEST_FILE, string(line) + "\n");
@@ -881,6 +934,144 @@ int runWorktodoTests() {
     printf("     %s  %zu malformed/out-of-range inputs each refused with a reason\n",
            allOk ? "PASS" : "FAIL", sizeof(BAD) / sizeof(BAD[0]));
   }
+
+  printf("\n  O. lines longer than the read buffer\n");
+  {
+    // Both loops used to read with fgets(buf, 1024, f), which hands back the
+    // tail of a longer line as though it were the next line -- and the tail of
+    // this comment is digits, so it queued M1000003, an exponent that appears
+    // nowhere in the file, and wrote its result to results.txt under it.
+    const string longComment = "# " + string(2000, 'x') + "1000003";
+    writeRaw(TEST_FILE, longComment + "\n786613\n");
+    vector<WorktodoEntry> out;
+    string err;
+    const bool loaded = loadWorktodo(TEST_FILE, out, err);
+    const bool oneEntry = loaded && out.size() == 1 && out[0].exponent == 786613;
+    if (!oneEntry) {
+      ++fails;
+      printf("  FAIL long comment: ok=%d size=%zu first=%u\n", loaded, out.size(),
+             out.empty() ? 0 : out[0].exponent);
+    }
+    printf("     %s  a %zu-byte comment is one comment, not a comment plus M1000003\n",
+           oneEntry ? "PASS" : "FAIL", longComment.size());
+
+    // The consume half had the worse end of the same bug: the truncated head
+    // went back to disk without the newline it never had, so the next real
+    // entry was glued onto the end of a comment and left the queue silently.
+    bool consumeOk = false;
+    if (oneEntry) {
+      string cerr;
+      vector<WorktodoEntry> after;
+      string aerr;
+      consumeOk = consumeWorktodoEntry(TEST_FILE, out[0], cerr)
+               && loadWorktodo(TEST_FILE, after, aerr) && after.empty();
+      // ... and the comment it left behind is still exactly one line.
+      size_t newlines = 0;
+      if (FILE* fp = fopen(TEST_FILE, "rb")) {
+        char c;
+        while (fread(&c, 1, 1, fp) == 1) { if (c == '\n') { ++newlines; } }
+        fclose(fp);
+      }
+      consumeOk = consumeOk && newlines == 1;
+    }
+    if (!consumeOk) { ++fails; }
+    printf("     %s  consuming the entry after it leaves the long line whole\n",
+           consumeOk ? "PASS" : "FAIL");
+
+    // The shape that makes this reachable in a real file is a Pminus1= line
+    // whose known-factors list runs past the buffer. These three are genuine
+    // factors of M4444091; the padding between them stands in for the dozens
+    // more a heavily-factored exponent carries, without inventing any.
+    const string many = "Pminus1=1,2,4444091,-1,100000,3000000,70,0,"
+                        "\"8888183," + string(400, ' ')
+                        + "319974553," + string(400, ' ')
+                        + "636358278473" + string(300, ' ') + "\"";
+    writeRaw(TEST_FILE, many + "\n");
+    vector<WorktodoEntry> big;
+    string berr;
+    const bool bigOk = loadWorktodo(TEST_FILE, big, berr) && big.size() == 1
+                    && big[0].exponent == 4444091 && big[0].knownFactors.size() == 3;
+    if (!bigOk) {
+      ++fails;
+      printf("  FAIL long Pminus1: size=%zu err=%s\n", big.size(), berr.c_str());
+    }
+    printf("     %s  a %zu-byte Pminus1= line is one entry with all its known factors\n",
+           bigOk ? "PASS" : "FAIL", many.size());
+  }
+
+  printf("\n  P. known factors are checked against M_p, not just against the digits\n");
+  {
+    // This list is echoed verbatim into results.txt as "known-factors", where
+    // PrimeNet reads it as a claim about M_p -- and it was the only thing the
+    // program ever did with it, so a typo had nothing downstream to catch it.
+    struct KF { const char* line; bool want; const char* why; };
+    static const KF KFS[] = {
+      { "Pfactor=1,2,11,-1,10,1.0,\"23,89\"",                              true,
+        "2047 = 23 * 89" },
+      { "Pfactor=1,2,11,-1,10,1.0,\"23,91\"",                              false,
+        "91 does not divide 2047" },
+      { "Pfactor=1,2,1000099,-1,67,1.6,\"155058493988826487335266033969\"", true,
+        "a real 30-digit factor of M1000099" },
+      { "Pfactor=1,2,1000099,-1,67,1.6,\"155058493988826487335266033967\"", false,
+        "the same factor with its last digit typed wrong" },
+      { "Pfactor=1,2,11,-1,10,1.0,\"1\"",                                  false,
+        "1 divides everything and factors nothing" },
+      { "Pfactor=1,2,11,-1,10,1.0,\"0\"",                                  false,
+        "0 would have been a modulus of zero" },
+      { "Pminus1=1,2,11,-1,100000,3000000,10,0,\"89\"",                    true,
+        "Pminus1= reaches the same check through its positional tail" },
+      { "Pminus1=1,2,11,-1,100000,3000000,10,0,\"87\"",                    false,
+        "and refuses there too" },
+    };
+    bool allOk = true;
+    for (const KF& k : KFS) {
+      writeRaw(TEST_FILE, string(k.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      const bool got = loadWorktodo(TEST_FILE, out, err) && !out.empty();
+      if (got != k.want || (!got && err.empty())) {
+        allOk = false;
+        printf("  FAIL '%s': %s (%s)\n", k.line,
+               got ? "accepted, should be refused" : "refused, should be accepted", k.why);
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  %zu known-factor lists, each accepted or refused on divisibility\n",
+           allOk ? "PASS" : "FAIL", sizeof(KFS) / sizeof(KFS[0]));
+  }
+
+  printf("\n  Q. an assigned B1 stage 2 cannot pair against\n");
+  {
+    // A Pminus1= line always asks for a stage 2, and the smallest shape
+    // (D=210, w=1) cannot walk primes at or below 105. Below that,
+    // buildStage2Plan throws -- but only once stage 1 has already run, and
+    // again on every restart, because the entry is still in the queue.
+    struct B1C { const char* line; bool want; };
+    static const B1C B1S[] = {
+      { "Pminus1=1,2,1000099,-1,10,1000",     false },
+      { "Pminus1=1,2,1000099,-1,104,200000",  false },
+      { "Pminus1=1,2,1000099,-1,105,200000",  true  },
+      { "Pminus1=1,2,1000099,-1,100000,3000000", true },
+    };
+    bool allOk = true;
+    for (const B1C& b : B1S) {
+      writeRaw(TEST_FILE, string(b.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      const bool got = loadWorktodo(TEST_FILE, out, err) && !out.empty();
+      if (got != b.want || (!got && err.empty())) {
+        allOk = false;
+        printf("  FAIL '%s': %s\n", b.line,
+               got ? "accepted, should be refused" : "refused, should be accepted");
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  B1 below %llu refused at parse time, not an hour into stage 2\n",
+           allOk ? "PASS" : "FAIL", (unsigned long long) STAGE2_MIN_B1);
+  }
+
+  filesystem::remove(TEST_FILE);
+  filesystem::remove(string(TEST_FILE) + ".tmp");
 
   printf("\n%s\n", fails ? "worktodo: FAILED" : "worktodo: all tests passed");
   return fails ? 1 : 0;
