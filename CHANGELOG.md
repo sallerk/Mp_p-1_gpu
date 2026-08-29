@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.9.3
+
+**A `Pminus1=` assignment ran P+1 as well, if config.txt said `method = both`.**
+The keyword was parsed and then ignored: only `config.txt`'s `method` decided
+which methods ran. So
+
+```
+worktodo.txt:  Pminus1=1,2,82589933,-1,1000000,30000000
+config.txt:    method = both
+```
+
+ran a full P+1 attempt first -- at the assignment's own B1/B2, work the
+assignment never asked for -- and wrote a `"worktype":"P+1"` line to
+`results.txt` for a P-1 assignment.
+
+**The assignment keyword now decides the method.** `Pminus1=` runs P-1 and
+only P-1; `Pplus1=` runs P+1 and only P+1. A `Pfactor=` line and a bare
+exponent name no method and defer to `config.txt` exactly as before --
+`Pfactor=` deliberately, since it asks for "enough factoring to decide
+whether a primality test is worth running", not for one particular method.
+The override is re-applied from a captured copy of the config values on every
+entry, so one assignment's method can never leak into the next; that is the
+same discipline `resolveBounds` already uses for bounds, and for the same
+reason.
+
+**`Pplus1=` assignments are now supported at all.** They were previously
+refused as an unsupported keyword, so "only run P+1 for a Pplus1= line" was
+not something the program could even express. The shape is Prime95's --
+`Pplus1=[aid,]k,b,n,c,B1,B2,nth_run[,how_far_factored][,"known_factors"]` --
+and the B1/B2 rules (the 4e9 cap, the 105 floor, B2 > B1) are shared with
+`Pminus1=` rather than reimplemented beside it.
+
+`nth_run` has no faithful translation here. Prime95 uses it to choose a
+starting value (1 -> 2/7, 2 -> 6/5, 3+ -> random); this program's P+1 is
+parameterised by an integer seed instead (`pp1_seeds`, default `3,5,7`). It
+is read as a 1-based index into `pp1_seeds`, which preserves what `nth_run`
+is *for* -- independent attempts at the same exponent -- without claiming to
+reproduce Prime95's own start values.
+
+New self-test section R: the four keyword-to-method mappings, a full
+`Pplus1=` line with AID, nth_run, how_far_factored and known factors, and six
+malformed `Pplus1=` lines each refused with a reason.
+
 ## 1.9.2
 
 **Four more ways a worktodo.txt line could produce a wrong reported value,

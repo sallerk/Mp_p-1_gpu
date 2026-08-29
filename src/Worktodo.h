@@ -2,18 +2,22 @@
 //
 // worktodo.txt: the exponent queue. One entry per line, top to bottom,
 // processed in order; '#' starts a comment, blank lines are ignored -- same
-// convention as config.txt. Every entry runs under the SAME config.txt
-// settings (method, bias, stages, ...); a bare integer is this program's own
-// shorthand for "factor M_p, everything else from config.txt".
+// convention as config.txt. A bare integer is this program's own shorthand
+// for "factor M_p, everything else from config.txt".
 //
-// A line can also be a Pfactor= or Pminus1= assignment, the shape AutoPrimeNet
-// (https://github.com/tdulcet/AutoPrimeNet) and Prime95 itself write. Such a
-// line carries its own k,b,n,c (validated as a Mersenne number: k=1,b=2,c=-1)
-// and, for Pminus1=, its own B1/B2, which are used whenever present -- a
-// Pfactor= line or a bare exponent has none, and falls back to config.txt's
-// own b1/b2 (auto by default). Both may also carry an assignment ID and
-// known factors, echoed back into results.txt so AutoPrimeNet's own upload
-// step stays consistent with what PrimeNet expects.
+// A line can also be a Pfactor=, Pminus1= or Pplus1= assignment, the shape
+// AutoPrimeNet (https://github.com/tdulcet/AutoPrimeNet) and Prime95 itself
+// write. Such a line carries its own k,b,n,c (validated as a Mersenne
+// number: k=1, b=2, c=-1), and Pminus1=/Pplus1= carry their own B1/B2, used
+// whenever present -- a Pfactor= line or a bare exponent has none and falls
+// back to config.txt's own b1/b2 (auto by default). Any of them may also
+// carry an assignment ID and known factors, echoed back into results.txt so
+// AutoPrimeNet's own upload step stays consistent with what PrimeNet expects.
+//
+// Most config.txt settings (bias, stages, ...) apply to every entry alike.
+// `method` is the exception: a Pminus1= or Pplus1= line names the method
+// itself, and then only that method runs. See WorktodoEntry::Method.
+//
 // This program never talks to PrimeNet itself; AutoPrimeNet is a separate
 // process that reads/writes these same two files.
 
@@ -28,11 +32,25 @@ struct WorktodoEntry {
   u32 exponent = 0;
   u32 lineNo = 0;   // physical line in the file, used to remove exactly this entry
 
+  // Which method this entry demands. A Pminus1=/Pplus1= line names one, and
+  // then ONLY that one runs, whatever config.txt's `method` says -- the
+  // assignment is an instruction, not a hint. Before 1.9.3 the keyword was
+  // parsed and then ignored, so `method = both` ran a P+1 attempt against a
+  // Pminus1= assignment: work the assignment never asked for, and a
+  // "worktype":"P+1" line written to results.txt for a P-1 assignment.
+  //
+  // A bare exponent names no method and falls back to config.txt. So does
+  // Pfactor=, deliberately: that keyword asks for "enough factoring to decide
+  // whether a primality test is worth running", not for one particular method,
+  // so `method = both` remains free to try P+1 as well.
+  enum Method { FROM_CONFIG, PM1_ONLY, PP1_ONLY };
+  Method method = FROM_CONFIG;
+
   // Set only by a Pfactor=/Pminus1= line; a bare-integer line leaves every
   // field below at its default, identical to today's behavior.
   std::string aid;                        // "" == none (32 hex chars in the file)
 
-  bool hasAssignedBounds = false;         // true only for Pminus1=
+  bool hasAssignedBounds = false;         // true for Pminus1= and Pplus1=
   u64 assignedB1 = 0;
   u64 assignedB2 = 0;
 
@@ -46,6 +64,14 @@ struct WorktodoEntry {
   bool hasFactoredTo = false;             // how_far_factored (Pfactor) or
                                           // sieve_depth (Pminus1) was present
   u32 factoredTo = 0;                     // bits, floored; same range as Config::factoredTo
+
+  // Pplus1='s nth_run: Prime95 uses it to pick a starting value (1 -> 2/7,
+  // 2 -> 6/5, 3+ -> random). This program's P+1 is parameterised by an integer
+  // seed instead (config.txt's pp1_seeds, default 3,5,7), so there is no
+  // faithful translation. It is taken as a 1-based index into pp1_seeds, which
+  // preserves what nth_run is FOR -- independent attempts at the same exponent
+  // -- without pretending to reproduce Prime95's own start values. 0 = absent.
+  u32 pp1NthRun = 0;
 
   double testsSaved = 0;                  // Pfactor= only; FYI, see Config.h's note
   std::vector<std::string> knownFactors;  // decimal strings, echoed back verbatim

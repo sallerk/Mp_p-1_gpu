@@ -143,7 +143,28 @@ entry runs under `config.txt`'s settings — `method`, `b1`/`b2`, `bias`,
 `stages`, and everything else — only the exponent (and, for `factored_to =
 auto`, its default) varies per entry.
 
-A line can also be a `Pfactor=` or `Pminus1=` assignment — the shape
+**The assignment keyword picks the method.** A `Pminus1=` line runs P-1 and
+only P-1; a `Pplus1=` line runs P+1 and only P+1 — whatever `method` says in
+`config.txt`. The line names the work, so the line wins. A `Pfactor=` line
+and a bare exponent name no method and defer to `config.txt` as before,
+`Pfactor=` deliberately: it asks for "enough factoring to decide whether a
+primality test is worth running", not for one particular method, so
+`method = both` is still free to try P+1 alongside P-1 for it.
+
+Before 1.9.3 the keyword was parsed and then ignored, so `method = both` ran
+a P+1 attempt against a `Pminus1=` assignment — work the assignment never
+asked for, and a `"worktype":"P+1"` line written to `results.txt` for a P-1
+assignment.
+
+`Pplus1=k,b,n,c,B1,B2,nth_run[,how_far_factored][,"known_factors"]` follows
+Prime95's shape, with `nth_run` required. Prime95 uses `nth_run` to choose a
+starting value (1 → 2/7, 2 → 6/5, 3+ → random); this program's P+1 is
+parameterised by an integer seed instead (`pp1_seeds`, default `3,5,7`), so
+there is no faithful translation. It is read as a 1-based index into
+`pp1_seeds` — preserving what `nth_run` is *for*, independent attempts at the
+same exponent, without claiming to reproduce Prime95's own start values.
+
+A line can also be a `Pfactor=`, `Pminus1=` or `Pplus1=` assignment — the shape
 [AutoPrimeNet](https://github.com/tdulcet/AutoPrimeNet) (the maintained
 successor to gpuowl's `primenet.py`) and Prime95 itself write. This program
 never talks to PrimeNet itself — no networking of any kind was added — but

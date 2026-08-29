@@ -988,6 +988,15 @@ static int runMain(int argc, char** argv) {
     const u64 configuredB1 = cfg.b1;
     const u64 configuredB2 = cfg.b2;
 
+    // And for the method. A Pminus1=/Pplus1= entry runs ONLY the method its
+    // keyword names, so config.txt's own `method` has to be restorable per
+    // entry -- otherwise one assignment's override would silently become the
+    // setting for every entry after it, which is exactly the class of bug
+    // resolveBounds exists to prevent for bounds.
+    const bool configuredDoPM1 = cfg.doPM1;
+    const bool configuredDoPP1 = cfg.doPP1;
+    const std::vector<u32> configuredPp1Seeds = cfg.pp1Seeds;
+
     // Peek at the next queued exponent WITHOUT consuming it, purely so
     // --bounds and --tune (which read cfg.exponent same as always) have
     // something to scope themselves to. The actual job loop below re-reads
@@ -1228,6 +1237,28 @@ static int runMain(int argc, char** argv) {
       // so an assigned-bounds entry can never leak its B1/B2 into the NEXT
       // entry. Self-tested (Worktodo.cpp's runWorktodoTests) precisely
       // because this precedence has already changed twice in one session.
+      // The assignment keyword wins over config.txt's `method`. A Pminus1=
+      // line means P-1, a Pplus1= line means P+1; a bare exponent or a
+      // Pfactor= line names no method and keeps whatever config.txt says.
+      // See Worktodo.h. Reset from the captured values every entry, never
+      // from whatever the previous entry left behind.
+      cfg.doPM1 = configuredDoPM1;
+      cfg.doPP1 = configuredDoPP1;
+      cfg.pp1Seeds = configuredPp1Seeds;
+      if (job.method == WorktodoEntry::PM1_ONLY) {
+        cfg.doPM1 = true;
+        cfg.doPP1 = false;
+      } else if (job.method == WorktodoEntry::PP1_ONLY) {
+        cfg.doPM1 = false;
+        cfg.doPP1 = true;
+        // nth_run picks WHICH independent attempt this is; see Worktodo.h for
+        // why that becomes an index into pp1_seeds rather than Prime95's own
+        // start values. One seed, because the assignment asked for one run.
+        if (job.pp1NthRun && !configuredPp1Seeds.empty()) {
+          cfg.pp1Seeds = {configuredPp1Seeds[(job.pp1NthRun - 1) % configuredPp1Seeds.size()]};
+        }
+      }
+
       const ResolvedBounds rb = resolveBounds(job, configuredB1, configuredB2);
       cfg.b1 = rb.b1;
       cfg.b2 = rb.b2;
@@ -1238,6 +1269,11 @@ static int runMain(int argc, char** argv) {
       cfg.ignoredB2Start = job.b2Start;
 
       printf("\n=== M%u (%zu queued) ===\n\n", job.exponent, entries.size());
+      if (job.method != WorktodoEntry::FROM_CONFIG) {
+        printf("  %s only, named by the assignment keyword -- config.txt's method\n"
+               "  does not apply to this entry\n",
+               job.method == WorktodoEntry::PM1_ONLY ? "P-1" : "P+1");
+      }
 
       const int rc = runOneJob(cfg, shared, queue, fftSpec, deviceOverride);
       if (rc == 1) { return 1; }   // interrupted mid-job; entry stays queued

@@ -281,18 +281,19 @@ bool parsePfactor(string value, u32 lineNo, WorktodoEntry& out, string& err) {
   return true;
 }
 
-bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
-  out.aid = stripAid(value);
-  const vector<string> f = splitTopLevel(value);
-  if (!parseKbnc(f, lineNo, out.exponent, err)) { return false; }
+// Fields 4 and 5, the B1/B2 pair Pminus1= and Pplus1= share, validated
+// identically for both. k,b,n,c has already been consumed by parseKbnc.
+bool parseAssignedBounds(const vector<string>& f, u32 lineNo, const char* keyword,
+                         WorktodoEntry& out, string& err) {
+  const string where = "worktodo.txt line " + to_string(lineNo) + ": ";
   if (f.size() < 6) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": Pminus1= needs k,b,n,c,B1,B2";
+    err = where + keyword + " needs k,b,n,c,B1,B2";
     return false;
   }
   double b1 = 0, b2 = 0;
   if (!parseDoubleField(f[4], b1) || !parseDoubleField(f[5], b2)
       || !(b1 >= 2) || !(b2 >= 2)) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": malformed B1/B2";
+    err = where + "malformed B1/B2";
     return false;
   }
   // Positive-form range tests above, and an explicit ceiling here. "b1 < 2"
@@ -302,20 +303,20 @@ bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
   // then returns means B1 = 0 -- a run that does no stage 1 at all and
   // reports "no factor" for an assignment that asked for real work.
   if (!(b2 <= STAGE2_B2_MAX)) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": B2 " + f[5]
-        + " is above this program's limit of " + to_string(u64(STAGE2_B2_MAX))
+    err = where + "B2 " + f[5] + " is above this program's limit of "
+        + to_string(u64(STAGE2_B2_MAX))
         + " (stage 2's setup exponents must fit a machine word)";
     return false;
   }
   out.assignedB1 = u64(b1 + 0.5);
   out.assignedB2 = u64(b2 + 0.5);
   if (out.assignedB2 <= out.assignedB1) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": B2 must be greater than B1";
+    err = where + "B2 must be greater than B1";
     return false;
   }
   out.hasAssignedBounds = true;
 
-  // A Pminus1= line always asks for a stage 2 (B2 > B1 is enforced just
+  // An assignment line always asks for a stage 2 (B2 > B1 is enforced just
   // above), and stage 2's pairing needs every prime it walks to exceed w*D/2
   // -- with the smallest shape this program has, D = 210 and w = 1, that
   // floor is 105. An assigned B1 under it is not a small job but an
@@ -323,10 +324,37 @@ bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
   // has already run to completion, leaving the entry queued to fail the same
   // way on every restart. Refuse it here, where the line can name itself.
   if (out.assignedB1 < STAGE2_MIN_B1) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": B1 " + f[4]
-        + " is below " + to_string(STAGE2_MIN_B1) + ", the smallest B1 stage 2 can pair against";
+    err = where + "B1 " + f[4] + " is below " + to_string(STAGE2_MIN_B1)
+        + ", the smallest B1 stage 2 can pair against";
     return false;
   }
+  return true;
+}
+
+// The known-factors quote, when the positional walk has reached it. Shared
+// tail of Pminus1= and Pplus1=.
+bool parseTrailingKnownFactors(const vector<string>& f, size_t cursor, u32 lineNo,
+                               WorktodoEntry& out, string& err) {
+  if (cursor >= f.size()) { return true; }
+  if (!isQuoted(f[cursor])) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": unexpected extra field '" + f[cursor] + "'";
+    return false;
+  }
+  string what;
+  if (!parseKnownFactors(f[cursor], out.exponent, out.knownFactors, what)) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": " + what;
+    return false;
+  }
+  return true;
+}
+
+bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
+  out.aid = stripAid(value);
+  const vector<string> f = splitTopLevel(value);
+  if (!parseKbnc(f, lineNo, out.exponent, err)) { return false; }
+  if (!parseAssignedBounds(f, lineNo, "Pminus1=", out, err)) { return false; }
+  // The keyword names the method, so only that method runs. See Worktodo.h.
+  out.method = WorktodoEntry::PM1_ONLY;
 
   // The optional tail (sieve_depth, B2_start, known_factors) is POSITIONAL,
   // not tagged -- each of the first two slots is consumed whether or not its
@@ -351,18 +379,43 @@ bool parsePminus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
     }
     ++cursor;
   }
-  if (cursor < f.size()) {
-    if (!isQuoted(f[cursor])) {
-      err = "worktodo.txt line " + to_string(lineNo) + ": unexpected extra field '" + f[cursor] + "'";
-      return false;
-    }
-    string what;
-    if (!parseKnownFactors(f[cursor], out.exponent, out.knownFactors, what)) {
-      err = "worktodo.txt line " + to_string(lineNo) + ": " + what;
-      return false;
-    }
+  return parseTrailingKnownFactors(f, cursor, lineNo, out, err);
+}
+
+// Pplus1=[aid,]k,b,n,c,B1,B2,nth_run[,how_far_factored][,"known_factors"]
+// -- Prime95's own shape again, with nth_run REQUIRED where Pminus1='s whole
+// tail is optional. See Worktodo.h's pp1NthRun for how nth_run is read here.
+bool parsePplus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
+  out.aid = stripAid(value);
+  const vector<string> f = splitTopLevel(value);
+  if (!parseKbnc(f, lineNo, out.exponent, err)) { return false; }
+  if (!parseAssignedBounds(f, lineNo, "Pplus1=", out, err)) { return false; }
+  out.method = WorktodoEntry::PP1_ONLY;
+
+  if (f.size() < 7) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": Pplus1= needs k,b,n,c,B1,B2,nth_run";
+    return false;
   }
-  return true;
+  u64 nth = 0;
+  if (!parseExactU64(f[6], nth) || nth < 1) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": nth_run " + f[6]
+        + " must be a positive integer";
+    return false;
+  }
+  // Only ever used as an index into pp1_seeds, so the exact magnitude of an
+  // absurd value does not matter -- but it must not wrap on the way into u32.
+  out.pp1NthRun = u32(nth > 1000 ? 1000 : nth);
+
+  size_t cursor = 7;
+  if (cursor < f.size() && !isQuoted(f[cursor])) {
+    double sieve = 0;
+    if (parseDoubleField(f[cursor], sieve) && sieve >= 1 && sieve <= 127) {
+      out.hasFactoredTo = true;
+      out.factoredTo = u32(floor(sieve));
+    }
+    ++cursor;
+  }
+  return parseTrailingKnownFactors(f, cursor, lineNo, out, err);
 }
 
 // Parses one non-empty, non-comment worktodo.txt line: either a bare
@@ -388,6 +441,7 @@ bool parseWorktodoLine(const string& t, u32 lineNo, WorktodoEntry& out, string& 
   const string value = trim(t.substr(eq + 1));
   if (key == "pfactor") { return parsePfactor(value, lineNo, out, err); }
   if (key == "pminus1") { return parsePminus1(value, lineNo, out, err); }
+  if (key == "pplus1")  { return parsePplus1(value, lineNo, out, err); }
   err = "worktodo.txt line " + to_string(lineNo) + ": keyword '" + key
       + "' is not supported -- this program only factors (use Pfactor= or Pminus1=)";
   return false;
@@ -1068,6 +1122,84 @@ int runWorktodoTests() {
     if (!allOk) { ++fails; }
     printf("     %s  B1 below %llu refused at parse time, not an hour into stage 2\n",
            allOk ? "PASS" : "FAIL", (unsigned long long) STAGE2_MIN_B1);
+  }
+
+  filesystem::remove(TEST_FILE);
+  filesystem::remove(string(TEST_FILE) + ".tmp");
+
+  printf("\n  R. the assignment keyword decides the method, not config.txt\n");
+  {
+    // Until 1.9.3 the keyword was parsed and then thrown away: with
+    // `method = both` in config.txt, a Pminus1= assignment ran a P+1 attempt
+    // first -- work the assignment never asked for, and a "worktype":"P+1"
+    // line in results.txt for a P-1 assignment.
+    struct M { const char* line; WorktodoEntry::Method want; const char* why; };
+    static const M CASES[] = {
+      { "Pminus1=1,2,1000099,-1,100000,3000000",     WorktodoEntry::PM1_ONLY,
+        "Pminus1= means P-1 and nothing else" },
+      { "Pplus1=1,2,1000099,-1,100000,3000000,1",    WorktodoEntry::PP1_ONLY,
+        "Pplus1= means P+1 and nothing else" },
+      { "Pfactor=1,2,1000099,-1,67,1.6",             WorktodoEntry::FROM_CONFIG,
+        "Pfactor= asks for factoring, not for one method" },
+      { "1000099",                                   WorktodoEntry::FROM_CONFIG,
+        "a bare exponent names no method at all" },
+    };
+    bool allOk = true;
+    for (const M& c : CASES) {
+      writeRaw(TEST_FILE, string(c.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
+                   && out[0].method == c.want;
+      if (!ok) {
+        allOk = false;
+        printf("  FAIL '%s': method %d, wanted %d (%s) %s\n", c.line,
+               out.empty() ? -1 : int(out[0].method), int(c.want), c.why, err.c_str());
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  Pminus1=/Pplus1= force their method; Pfactor=/bare defer to config\n",
+           allOk ? "PASS" : "FAIL");
+
+    // Pplus1='s own shape: nth_run is required where Pminus1='s whole tail is
+    // optional, and the B1/B2 rules are shared with Pminus1= rather than
+    // reimplemented -- these two refusals prove the sharing.
+    writeRaw(TEST_FILE,
+             "Pplus1=AABBCCDD00112233445566778899AABB,1,2,4444091,-1,100000,3000000,3,70,\"8888183\"\n");
+    { vector<WorktodoEntry> out; string err;
+      const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
+          && out[0].method == WorktodoEntry::PP1_ONLY
+          && out[0].aid == "AABBCCDD00112233445566778899AABB"
+          && out[0].assignedB1 == 100000 && out[0].assignedB2 == 3000000
+          && out[0].pp1NthRun == 3
+          && out[0].hasFactoredTo && out[0].factoredTo == 70
+          && out[0].knownFactors.size() == 1 && out[0].knownFactors[0] == "8888183";
+      if (!ok) { ++fails; printf("  FAIL Pplus1 full: %s\n", err.c_str()); }
+      printf("     %s  Pplus1= with AID, nth_run, how_far_factored and known factors\n",
+             ok ? "PASS" : "FAIL"); }
+
+    struct Bad { const char* line; const char* why; };
+    static const Bad BADPP1[] = {
+      { "Pplus1=1,2,1000099,-1,100000,3000000",      "nth_run is not optional" },
+      { "Pplus1=1,2,1000099,-1,100000,3000000,0",    "nth_run 0 is not a run" },
+      { "Pplus1=1,2,1000099,-1,100000,3000000,x",    "nth_run must be an integer" },
+      { "Pplus1=1,2,1000099,-1,10,3000000,1",        "B1 floor, shared with Pminus1=" },
+      { "Pplus1=1,2,1000099,-1,100000,1e18,1",       "B2 cap, shared with Pminus1=" },
+      { "Pplus1=1,2,1000100,-1,100000,3000000,1",    "composite exponent, shared" },
+    };
+    bool badOk = true;
+    for (const Bad& b : BADPP1) {
+      writeRaw(TEST_FILE, string(b.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      if ((loadWorktodo(TEST_FILE, out, err) && !out.empty()) || err.empty()) {
+        badOk = false;
+        printf("  FAIL accepted '%s' (%s)\n", b.line, b.why);
+      }
+    }
+    if (!badOk) { ++fails; }
+    printf("     %s  %zu malformed Pplus1= lines refused, each with a reason\n",
+           badOk ? "PASS" : "FAIL", sizeof(BADPP1) / sizeof(BADPP1[0]));
   }
 
   filesystem::remove(TEST_FILE);
