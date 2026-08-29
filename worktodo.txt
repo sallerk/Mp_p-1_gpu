@@ -10,7 +10,7 @@
 #
 #    82589933
 #
-#  or a Pfactor=/Pminus1= assignment, the shape AutoPrimeNet
+#  or a Pfactor=/Pminus1=/Pplus1= assignment, the shape AutoPrimeNet
 #  (github.com/tdulcet/AutoPrimeNet) and Prime95 itself write, e.g.:
 #
 #    Pminus1=1,2,82589933,-1,1000000,30000000
@@ -20,9 +20,14 @@
 #  Pfactor= line or a bare exponent has none, and falls back to config.txt's
 #  own b1/b2. See MANUAL.md for the full field list of each shape.
 #
-#  Every entry runs under the SAME config.txt settings (method, bias,
-#  stages, ...) -- only the exponent, and whatever an assignment line itself
-#  supplies (bounds, how-far-factored, known factors), varies per entry.
+#  Entries run under config.txt's settings (bias, stages, ...) -- only the
+#  exponent, and whatever an assignment line itself supplies (bounds,
+#  how-far-factored, known factors), varies per entry.
+#
+#  `method` is the exception: a Pminus1= line runs P-1 and ONLY P-1, and a
+#  Pplus1= line runs P+1 and ONLY P+1, whatever config.txt says. The line
+#  names the work, so the line wins. A Pfactor= line and a bare exponent
+#  name no method and use config.txt's `method` as before.
 #
 #  If a job is interrupted (Ctrl+C, or the program is killed), its line
 #  stays here untouched -- relaunching resumes that exponent from its
