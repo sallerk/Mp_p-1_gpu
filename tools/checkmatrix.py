@@ -41,7 +41,10 @@ def top_keys(raw):
         elif c in "}]":             depth -= 1
     return keys
 
-FORBIDDEN = ("security-code", "poly1-size", "poly2-size", "stage2-fft-length",
+# stage2-fft-length is NOT here: 1.9.5 emits it, on the same P-1 stage-2 lines
+# that carry "d". poly1-size and poly2-size stay forbidden -- they size
+# polynomials this program never builds, so any value would be invented.
+FORBIDDEN = ("security-code", "poly1-size", "poly2-size",
              "build", "port", "seed")
 
 def job_resolutions(log):
@@ -101,6 +104,16 @@ def check_results(cases, log):
                 prob.append(f"emitted {bad}")
         if "fft-length" not in g:
             prob.append("no fft-length")
+
+        # stage2-fft-length rides with "d": P-1, and only when stage 2 is what
+        # produced the result. It must equal fft-length, because one FFT is
+        # chosen per job and both stages share it -- if that ever stops being
+        # true the writer is reusing a value it should be reading.
+        has_s2fft = "stage2-fft-length" in g
+        if has_s2fft != has_d:
+            prob.append(f"stage2-fft-length present={has_s2fft}, d present={has_d}")
+        elif has_s2fft and g["stage2-fft-length"] != g["fft-length"]:
+            prob.append(f'stage2-fft-length {g["stage2-fft-length"]} != fft-length {g["fft-length"]}')
         if g["exponent"] != 1000273:
             prob.append(f'exponent {g["exponent"]}')
 

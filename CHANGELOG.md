@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.9.5
+
+**`results.txt` emits `stage2-fft-length` on P-1 lines whose stage 2 produced
+the result** -- the same lines that carry `d`, in Prime95's position for it:
+after `d`, immediately before `fft-length`.
+
+1.9.4 left it out, on the reasoning that Prime95 writes it only inside
+`stage2_type == PM1_STAGE2_POLYMULT`, so the key asserts an algorithm this
+program does not run. That reasoning is unchanged and still in the source; the
+decision it fed is reversed. The field names the transform length stage 2 ran
+at, this program has such a length, and a consumer reading it as "the FFT
+stage 2 used" gets a true answer. `poly1-size` and `poly2-size` stay absent,
+and the line between them is worth stating: those size polynomials that are
+never built here, so any value would be invented, where a length stage 2
+genuinely runs at is not.
+
+**It always equals `fft-length`.** One FFT is chosen per job in `main()` and
+one `Gpu` built from it; `runPM1Stage1`, `runPM1Stage2`, `runPP1Stage1` and
+`runPP1Stage2` all take that same `Gpu` by reference, and nothing under
+`PM1.cpp` or the `Stage2` files so much as names `FFTConfig`. Stage 2 continues
+from stage 1's residue in the same buffers, so a second length would mean
+renormalising between representations to run the identical operation -- a
+modmul on `M_p` -- on an identically sized operand. A longer transform would
+also cost stage 2 twice: more work per modmul, and larger `T_j` buffers, so
+fewer fit the memory budget and `pickStage2Shape` drops to a coarser `(D, w)`
+with more muls per prime.
+
+Prime95's two lengths differ because its stage 2 is a different algorithm: its
+stage-2 transform is *longer* than its stage-1 one -- 25*2^20 to 30*2^20 on
+M461051111, 189*2^18 to 216*2^18 on M849153401 -- which costs time, so
+something forces it. Polymult sums many coefficient products into each output
+and needs the round-off headroom fewer bits per word buys.
+
+`--selftest=results` gains a section E2 asserting the equality, and that the
+field is absent from stage-1-only lines and from P+1 entirely. The equality is
+the part worth a test: it is true today because of how the job is built, not
+by construction, so if a future stage 2 ever picks its own transform the check
+fires and the writer has to be told where to read the real value instead of
+reusing `cfg.fftLength`. 13 checks; all six line shapes were also re-verified
+against real runs over M1000003, M1000273, M1000763 and M4444091.
+
 ## 1.9.4
 
 **P+1 starts where Prime95 starts, results.txt matches Prime95 field for

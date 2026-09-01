@@ -511,13 +511,26 @@ stage-2 gcd ran to cover (B1, B2]. In this program stage 2 may in fact have
 run: it is overlapped with the stage-1 gcd and discarded if that gcd wins the
 race. Discarded work is not coverage.
 
-Prime95 also writes `poly1-size`, `poly2-size` and `stage2-fft-length` on such
-a line. This program writes **none of the three**: all three sit inside its
-`stage2_type == PM1_STAGE2_POLYMULT` branch and describe the polynomial
-multiplication its stage 2 uses from 30.8 on. This program pairs primes in
-Montgomery's scheme, so there are no polynomials to size, and reporting the FFT
-length under a key Prime95 uses only for polymult would imply an algorithm that
-never ran. Prime95 emits none of these for P+1 either, and neither does this.
+Such a line also carries **`stage2-fft-length`**, in Prime95's position for it:
+after `d`, immediately before `fft-length`. Here the two are **always equal**,
+and that is a fact about this program rather than a placeholder. One FFT is
+chosen per job; all four stage entry points take the same `Gpu` built from it,
+and stage 2 continues from stage 1's residue in the same buffers, so a second
+transform length would mean renormalising between representations to run the
+identical operation on an identically sized operand.
+
+Prime95's two differ because its stage 2 is a different algorithm. From 30.8 it
+multiplies polynomials, and its stage-2 transform is measurably *longer* than
+its stage-1 one -- 25*2^20 to 30*2^20 on M461051111, 189*2^18 to 216*2^18 on
+M849153401. A longer transform costs time, so something forces it: polymult
+sums many coefficient products into each output and needs the round-off
+headroom that fewer bits per word buys. Montgomery pairing does not.
+
+`poly1-size` and `poly2-size` stay absent. Both sit inside Prime95's
+`stage2_type == PM1_STAGE2_POLYMULT` branch and size polynomials this program
+never builds, so any value would be invented -- which a length stage 2
+genuinely runs at is not. Prime95 writes none of the three for P+1, and neither
+does this.
 
 `status` is `F` (factor), `NF` (no factor), or `C` (a divisor that could not be
 split into primes — recorded for you, not submittable). One line per job, with
@@ -764,12 +777,18 @@ numbers.
 
 `--selftest=results` is worth singling out. It checks the exact field set and
 field **order** of every line `results.txt` can hold, against Prime95's, and
-asserts that `security-code`, `poly1-size`, `poly2-size`, `stage2-fft-length`,
-`build`, `port` and `seed` never appear. That list is not hypothetical: the
-output wrote `seed` where Prime95 writes `start`, and a later draft wrote
-`stage2-fft-length`, which Prime95 emits only for a polymult stage 2. Both
-were caught by reading Prime95's source rather than by running anything,
-which is why the check exists.
+asserts that `security-code`, `poly1-size`, `poly2-size`, `build`, `port` and
+`seed` never appear. That list is not hypothetical -- the output once wrote
+`seed` where Prime95 writes `start`, caught by reading Prime95's source rather
+than by running anything, which is why the check exists.
+
+It also checks agreement *between* fields, not just their presence:
+`stage2-fft-length` must equal `fft-length`, and must be absent from
+stage-1-only lines and from P+1 altogether. The equality holds because one FFT
+is chosen per job and both stages share it -- a property of how the job is
+built, not something the writer enforces. If a future stage 2 ever picks its
+own transform, that check fires and the writer has to be told where to read
+the real length instead of reusing the job's.
 
 ## Scope and limitations
 

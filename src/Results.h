@@ -6,11 +6,11 @@
 //
 // This lives apart from main.cpp for one reason: the exact set of fields, and
 // their order, is a compatibility contract with another program, and it has
-// been got wrong twice -- once by emitting "seed" where Prime95 writes
-// "start", and once by emitting "stage2-fft-length", which turns out to be a
-// polymult-only field. Both were caught by reading Prime95's source, not by
-// this program noticing. In its own translation unit the writer can be called
-// by a self-test, which is what runResultsTests does.
+// been got wrong before -- "seed" where Prime95 writes "start", caught by
+// reading Prime95's source rather than by this program noticing anything. In
+// its own translation unit the writer can be called by a self-test, which is
+// what runResultsTests does: field set, field order, and the values that must
+// agree across fields.
 
 #pragma once
 
@@ -32,7 +32,9 @@ struct Pp1Start;
 //             recorded so the run is not silently lost. Empty means "NF".
 //   start     P+1's rational starting point, null for P-1
 //   stage2D   the stage-2 pairing modulus, 0 when stage 2 did not produce
-//             this result (which is how Prime95 decides to omit "d" too)
+//             this result (which is how Prime95 decides to omit "d" too).
+//             Non-zero on a P-1 line also emits "stage2-fft-length": the
+//             two fields mark the same thing, that stage 2 is what ran.
 void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
                      const std::vector<FoundFactor>& factors, const Pp1Start* start,
                      u32 stage2D);

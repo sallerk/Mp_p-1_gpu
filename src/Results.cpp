@@ -5,6 +5,7 @@
 #include "PM1.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include "BigInt.h"
@@ -72,24 +73,44 @@ void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
     // and this program follows both rules: b2 > b1 here, and the P-1 callers
     // pass stage2D only when the result came out of stage 2.
     //
-    // Everything else Prime95 puts on such a line lives inside its
-    //     if (stage2_type == PM1_STAGE2_POLYMULT)
-    // branch: "poly1-size", "poly2-size" AND "stage2-fft-length". Those three
-    // describe the polynomial multiplication its stage 2 uses from 30.8 on.
-    // This program pairs primes in Montgomery's scheme, so none of the three
-    // applies -- there are no polynomials to size, and emitting the FFT length
-    // under a name Prime95 only ever uses for polymult would imply an
-    // algorithm this program does not run. A draft of this release emitted
-    // stage2-fft-length on the reasoning that it was at least a true
-    // statement; it is, but it is a true statement filed under a key that
-    // means "polymult ran".
+    // Prime95 emits no "d" for P+1, so the P+1 callers pass 0. `start`
+    // non-null means P+1, and the rule belongs here rather than at all six
+    // call sites: a contract with another program should not depend on every
+    // caller remembering it.
+    const bool pm1Stage2 = ranStage2 && stage2D && !start;
+    if (pm1Stage2) { fprintf(f, ", \"d\":%u", stage2D); }
+
+    // "stage2-fft-length", on the same P-1-stage-2 lines Prime95 puts it on,
+    // and in its position: after "d", immediately before "fft-length".
     //
-    // Prime95 emits none of these for P+1 either, so the P+1 callers pass 0.
-    // `start` non-null means P+1, and Prime95 writes no "d" for P+1. Every
-    // P+1 caller already passes stage2D as 0, but the rule belongs here: a
-    // contract with another program should not depend on all six call sites
-    // remembering it.
-    if (ranStage2 && stage2D && !start) { fprintf(f, ", \"d\":%u", stage2D); }
+    // It is always EQUAL to "fft-length" here, and that is a fact about this
+    // program rather than a placeholder. One FFT is chosen per job in main()
+    // and one Gpu built from it; all four stage entry points take that same
+    // Gpu by reference, and nothing under PM1.cpp or the Stage2 files so much
+    // as names FFTConfig. Stage 2 continues from stage 1's residue in the
+    // same buffers, so a second transform length would mean renormalising
+    // between representations for no gain -- both stages do the identical
+    // operation, a modmul on M_p, on an operand of the identical size.
+    //
+    // Prime95 differs because its stage 2 is a different algorithm. From 30.8
+    // it multiplies polynomials, and writes this field inside
+    //     if (stage2_type == PM1_STAGE2_POLYMULT)
+    // alongside "poly1-size" and "poly2-size". Its stage-2 transform is
+    // measurably LONGER than its stage-1 one -- 25*2^20 -> 30*2^20 on
+    // M461051111, 189*2^18 -> 216*2^18 on M849153401 -- which costs time, so
+    // something forces it: polymult sums many coefficient products into each
+    // output and needs the extra round-off headroom that fewer bits per word
+    // buys. None of that applies to Montgomery pairing.
+    //
+    // "poly1-size" and "poly2-size" stay absent regardless. There are no
+    // polynomials here to report a size for, so any value would be invented;
+    // a length this program genuinely runs stage 2 at is not.
+    //
+    // Gated on cfg.fftLength for the same reason "fft-length" is: when the
+    // transform is unknown the field goes away rather than reporting 0.
+    if (pm1Stage2 && cfg.fftLength) {
+      fprintf(f, ", \"stage2-fft-length\":%llu", (unsigned long long) cfg.fftLength);
+    }
     // P+1 only: which rational the Lucas sequence started from. P-1 has no
     // equivalent, and Prime95 emits none for it either.
     if (start) { fprintf(f, ", \"start\":\"%s\"", start->label().c_str()); }
@@ -255,13 +276,15 @@ int runResultsTests() {
         {"status", "exponent", "worktype", "b1", "fft-length", "program", "timestamp"});
   shape("NF, stage 2 ran           -- b2 and d together",
         emit(base, "P-1", 1000, 50000, {}, nullptr, 630),
-        {"status", "exponent", "worktype", "b1", "b2", "d", "fft-length", "program", "timestamp"});
+        {"status", "exponent", "worktype", "b1", "b2", "d", "stage2-fft-length",
+         "fft-length", "program", "timestamp"});
   shape("F, found in stage 1       -- factors early, still no b2",
         emit(base, "P-1", 1000, 1000, found, nullptr, 0),
         {"status", "exponent", "worktype", "factors", "b1", "fft-length", "program", "timestamp"});
   shape("F, found in stage 2",
         emit(base, "P-1", 1000, 50000, found, nullptr, 630),
-        {"status", "exponent", "worktype", "factors", "b1", "b2", "d", "fft-length", "program", "timestamp"});
+        {"status", "exponent", "worktype", "factors", "b1", "b2", "d", "stage2-fft-length",
+         "fft-length", "program", "timestamp"});
 
   printf("\n  B. P+1: start instead of d, on both statuses\n");
   shape("NF, stage 2 ran           -- start, and NO d",
@@ -279,7 +302,7 @@ int runResultsTests() {
   shape("C, composite divisor",
         emit(base, "P-1", 1000, 50000, composite, nullptr, 630),
         {"status", "exponent", "worktype", "composite", "note", "b1", "b2", "d",
-         "fft-length", "program", "timestamp"});
+         "stage2-fft-length", "fft-length", "program", "timestamp"});
 
   printf("\n  D. the metadata tail, in Prime95's order\n");
   {
@@ -290,8 +313,8 @@ int runResultsTests() {
     cfg.knownFactors = {"8888183", "319974553"};
     shape("known-factors before user, aid last",
           emit(cfg, "P-1", 1000, 50000, found, nullptr, 630),
-          {"status", "exponent", "worktype", "factors", "b1", "b2", "d", "fft-length",
-           "program", "timestamp", "known-factors", "user", "computer", "aid"});
+          {"status", "exponent", "worktype", "factors", "b1", "b2", "d", "stage2-fft-length",
+           "fft-length", "program", "timestamp", "known-factors", "user", "computer", "aid"});
   }
   {
     Config cfg = base;
@@ -303,13 +326,14 @@ int runResultsTests() {
 
   printf("\n  E. fields Prime95 writes that this program must NOT\n");
   {
-    // security-code is Prime95's SEC5 over its own state. poly1-size,
-    // poly2-size and stage2-fft-length live inside its polymult branch and
-    // describe an algorithm this program does not run. build and port
+    // security-code is Prime95's SEC5 over its own state. poly1-size and
+    // poly2-size describe polynomials this program never builds, so any value
+    // would be invented -- unlike stage2-fft-length, which names a length
+    // stage 2 genuinely runs at, and which is emitted above. build and port
     // describe a Prime95 install. "seed" was this program's own old spelling
     // of "start". None of them may appear again.
     static const char* FORBIDDEN[] = {"security-code", "poly1-size", "poly2-size",
-                                      "stage2-fft-length", "build", "port", "seed"};
+                                      "build", "port", "seed"};
     Config cfg = base;
     cfg.username = "u";
     cfg.computerName = "c";
@@ -333,9 +357,36 @@ int runResultsTests() {
     }
     ++checks;
     if (!clean) { ++failures; }
-    printf("     %s  none of security-code, poly1-size, poly2-size,\n"
-           "           stage2-fft-length, build, port, seed appears on any line\n",
+    printf("     %s  none of security-code, poly1-size, poly2-size, build,\n"
+           "           port, seed appears on any line\n",
            clean ? "PASS" : "FAIL");
+  }
+
+  printf("\n  E2. stage2-fft-length: P-1 stage 2 only, and equal to fft-length\n");
+  {
+    // Emitted on the same lines Prime95 emits it on, carrying the length
+    // stage 2 actually ran at -- which here is always stage 1's, because one
+    // FFT is chosen per job and both stages share the Gpu built from it. The
+    // point of the equality check is that it stays true: if a future stage 2
+    // ever picks its own transform, this fires and the writer has to be told
+    // where to get the real value rather than reusing cfg.fftLength.
+    auto valueOf = [](const std::string& line, const char* key) -> long long {
+      const std::string pat = std::string("\"") + key + "\":";
+      const size_t at = line.find(pat);
+      if (at == std::string::npos) { return -1; }
+      return atoll(line.c_str() + at + pat.size());
+    };
+    const std::string pm1S2 = emit(base, "P-1", 1000, 50000, {}, nullptr, 630);
+    const std::string pm1S1 = emit(base, "P-1", 1000, 1000,  {}, nullptr, 0);
+    const std::string pp1S2 = emit(base, "P+1", 1000, 50000, {}, &start27, 630);
+    ++checks;
+    const bool ok = valueOf(pm1S2, "stage2-fft-length") == valueOf(pm1S2, "fft-length")
+                 && valueOf(pm1S2, "stage2-fft-length") > 0
+                 && valueOf(pm1S1, "stage2-fft-length") == -1   // no stage 2
+                 && valueOf(pp1S2, "stage2-fft-length") == -1;  // P+1
+    if (!ok) { ++failures; }
+    printf("     %s  equals fft-length on P-1 stage 2; absent on stage 1 and on P+1\n",
+           ok ? "PASS" : "FAIL");
   }
 
   printf("\n  F. d belongs to P-1 stage 2, start to P+1, never the reverse\n");
