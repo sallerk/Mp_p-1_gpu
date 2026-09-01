@@ -477,10 +477,10 @@ P+1 -- they all share the same `gcdWithProgress` reporting.
 
 ```json
 {"status":"F", "exponent":81679223, "worktype":"P-1", "factors":["..."],
- "b1":2000000, "b2":60000000, "fft-length":5242880,
+ "b1":2000000, "b2":60000000, "d":2310, "fft-length":5242880,
  "program":{"name":"Mp_p-1_gpu", "version":"1.9.4"},
- "timestamp":"2026-07-28 17:29:54", "user":"...", "computer":"...",
- "aid":"...", "known-factors":["..."]}
+ "timestamp":"2026-07-28 17:29:54", "known-factors":["..."],
+ "user":"...", "computer":"...", "aid":"..."}
 ```
 
 and a P+1 line, which carries `start` as well:

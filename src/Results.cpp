@@ -267,6 +267,10 @@ int runResultsTests() {
   shape("NF, stage 2 ran           -- start, and NO d",
         emit(base, "P+1", 1000, 50000, {}, &start27, 0),
         {"status", "exponent", "worktype", "b1", "b2", "start", "fft-length", "program", "timestamp"});
+  shape("F, found in stage 2       -- factors, b2 and start, still no d",
+        emit(base, "P+1", 1000, 50000, found, &start27, 0),
+        {"status", "exponent", "worktype", "factors", "b1", "b2", "start",
+         "fft-length", "program", "timestamp"});
   shape("F, stage 1 only",
         emit(base, "P+1", 1000, 1000, found, &start27, 0),
         {"status", "exponent", "worktype", "factors", "b1", "start", "fft-length", "program", "timestamp"});

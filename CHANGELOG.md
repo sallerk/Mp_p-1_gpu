@@ -55,9 +55,9 @@ filed under a key meaning "polymult ran" would be worse than no field.
 The writer moved to `src/Results.{h,cpp}`, because its field set is a contract
 with another program and it had internal linkage in main.cpp, so nothing could
 exercise it. `--selftest=results` now checks the field set and *order* of all
-eight line shapes, that the six forbidden fields never appear, and that `d`
+nine line shapes, that the six forbidden fields never appear, and that `d`
 belongs to P-1 while `start` belongs to P+1. Verified by mutation: putting the
-`stage2-fft-length` bug back fails 5 of its 11 checks.
+`stage2-fft-length` bug back fails 5 of its 12 checks.
 
 ### worktodo.txt
 
