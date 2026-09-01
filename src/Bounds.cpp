@@ -587,13 +587,19 @@ Bounds choosePP1Bounds(double exponent, u32 factoredTo, double bias,
 // this model is very flat, and a flat optimum is exactly the case where a single
 // recommended pair tells you nothing useful -- so show the neighbourhood.
 void printBoundsSurface(double exponent, u32 factoredTo, double bias,
-                        const CostModel& cost) {
-  const Bounds best = chooseBounds(exponent, factoredTo, bias, cost);
+                        const CostModel& cost, u64 fixedB1, u64 fixedB2) {
+  const bool pinned = fixedB1 || fixedB2;
+  const Bounds best = chooseBounds(exponent, factoredTo, bias, cost, fixedB1, fixedB2);
   printf("M%.0f, trial-factored to %u bits, bias %.2f\n", exponent, factoredTo, bias);
   printf("cost model: stage-1 iter %.2f, stage-2 mul %.2f x a squaring, "
          "%.3f muls/prime, gcd %.0f iters\n\n",
          cost.p1IterCost, cost.s2MulCost, cost.mulsPerPrime, cost.gcdIters);
 
+  if (pinned) {
+    printf("b1/b2 are pinned, so the survey below is what \"auto\" WOULD have\n"
+           "explored -- not what this job runs. The pinned bounds are on the\n"
+           "\"chosen\" line beneath it.\n\n");
+  }
   printf("  %-8s %-8s  %-9s  %-9s  %-9s  %s\n",
          "B1", "B2", "P(factor)", "work", "cost", "");
   printf("  %-8s %-8s  %-9s  %-9s  %-9s  %s\n",
@@ -625,6 +631,16 @@ void printBoundsSurface(double exponent, u32 factoredTo, double bias,
   printf("\nchosen: B1=%llu B2=%llu, P=%.3f%%, work %.3f PRP, expected cost %.4f\n",
          (unsigned long long) best.b1, (unsigned long long) best.b2, best.prob() * 100,
          (best.workStage1 + best.workStage2) / exponent, best.expectedCost / exponent);
+
+  // Pinned bounds leave chooseBounds a single candidate, so the tolerance band
+  // can only contain that one point and the knob does nothing at all. Printing a
+  // sweep here would suggest otherwise.
+  if (pinned) {
+    printf("\n  bounds_tolerance does nothing while b1/b2 are pinned: it chooses\n"
+           "  among candidates, and pinning leaves exactly one. Set b1 = auto\n"
+           "  to use it.\n");
+    return;
+  }
 
   // What the tolerance knob is actually buying. The whole reason it exists is
   // that this minimum is flat, so showing the trade beats asserting it: pick the

@@ -1874,7 +1874,10 @@ int runPp1Stage2Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
     // this seed). So B1=600 must NOT find it, and B2=10100 must.
     const u32 p = 862907;
     const char* factor = "125984423";
-    const u32 seed = 3;
+    // 3/1 is the integer seed 3 this case was derived for, expressed as the
+    // rational a start now is -- same arithmetic, but it exercises the
+    // residue-seeded ladder that production P+1 uses since 1.9.4.
+    const Pp1Start start{3, 1};
     const u64 b1 = 600, b2 = 10100;
 
     Nat qFactor;
@@ -1890,7 +1893,7 @@ int runPp1Stage2Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
     auto gpu = Gpu::make(q, p, shared, fft, {}, false);
 
     Timer t1;
-    PP1Result pr = runPP1Stage1(*gpu, cfg, b1, seed, false);
+    PP1Result pr = runPP1Stage1(*gpu, cfg, b1, start, false);
     const bool foundAtStage1 = pr.foundFactor;
     check(!foundAtStage1, "the factor is NOT reachable by stage 1 alone at B1=600");
     printf("     %s  stage 1 to B1=%llu: found early? %-3s  (%s)\n",
@@ -1898,7 +1901,7 @@ int runPp1Stage2Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
            foundAtStage1 ? "YES" : "no", fmtDuration(t1.at()).c_str());
 
     Timer t2;
-    PP1Stage2Result s2 = runPP1Stage2(*gpu, cfg, pr.residue, seed, b1, b2,
+    PP1Stage2Result s2 = runPP1Stage2(*gpu, cfg, pr.residue, start, b1, b2,
                                       /*d=*/210, /*w=*/1, false);
     const bool foundAtStage2 = s2.foundFactor &&
         std::any_of(s2.factors.begin(), s2.factors.end(),

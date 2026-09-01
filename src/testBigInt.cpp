@@ -479,6 +479,62 @@ int runBigIntTests() {
     }
   }
 
+  // --- P+1 rational starts -------------------------------------------------
+  // Everything about Prime95-compatible P+1 rests on two claims: that
+  // Pp1Start::forRun reproduces Prime95's table, and that ratioModMersenne
+  // really is num/den mod M_p. Both are checked here, on the CPU, because a
+  // wrong start is not a crash -- it is a run that quietly factors nothing
+  // while reporting a start it never used.
+  printf("\n  P+1 rational starts\n");
+  {
+    // Prime95: nth_run <= 1 -> 2/7, == 2 -> 6/5 (ecm.cpp, "Convert run number
+    // into starting point").
+    check(Pp1Start::forRun(1, 4444091).num == 2 && Pp1Start::forRun(1, 4444091).den == 7,
+          "run 1 is 2/7");
+    check(Pp1Start::forRun(2, 4444091).num == 6 && Pp1Start::forRun(2, 4444091).den == 5,
+          "run 2 is 6/5");
+    check(Pp1Start::forRun(0, 4444091).label() == "2/7", "run 0 clamps to 2/7, as Prime95 does");
+    check(Pp1Start::forRun(1, 4444091).label() == "2/7", "label() is what results.txt prints");
+
+    // run 3+ : numerator 72 + (rand() & 0x7F) is 72..199, denominator from a
+    // fixed table of 16 small primes. Same ranges here, drawn deterministically.
+    bool rangesOk = true, stable = true;
+    for (u32 run = 3; run < 40; ++run) {
+      for (u32 e : {786613u, 4444091u, 82589933u, 185640139u}) {
+        const Pp1Start s = Pp1Start::forRun(run, e);
+        if (s.num < 72 || s.num > 199) { rangesOk = false; }
+        const u32* tbl = Pp1Start::SMALL_PRIMES;
+        if (std::find(tbl, tbl + 16, s.den) == tbl + 16) { rangesOk = false; }
+        // Derived, not drawn: a resumed run must recompute the same start, or
+        // it would silently continue a different computation.
+        const Pp1Start again = Pp1Start::forRun(run, e);
+        if (again.num != s.num || again.den != s.den) { stable = false; }
+      }
+    }
+    check(rangesOk, "run 3+ numerator in 72..199 and denominator in Prime95's table");
+    check(stable, "the same (exponent, run) always gives the same start");
+
+    // The arithmetic itself: den * (num/den) == num (mod M_p). Exponents kept
+    // small enough to build M_p exactly; the identity does not care about size.
+    bool invOk = true;
+    for (u32 e : {11u, 89u, 127u, 1279u, 9689u}) {
+      const Nat M = mersenne(e);
+      for (u32 den : {1u, 5u, 7u, 11u, 13u, 17u, 19u, 23u, 29u, 31u,
+                      37u, 41u, 43u, 47u, 53u, 59u, 61u, 67u, 71u}) {
+        if (modU64(M, den) == 0) { continue; }   // den | M_p: no inverse exists
+        for (u32 num : {2u, 6u, 72u, 199u}) {
+          const Nat v = ratioModMersenne(num, den, e);
+          if (mod(mul(v, Nat(u64(den))), M) != mod(Nat(u64(num)), M)) { invOk = false; }
+        }
+      }
+    }
+    check(invOk, "den * ratioModMersenne(num, den, p) == num (mod 2^p - 1)");
+
+    // 1/1 is the degenerate integer-seed case and must not take the inverse
+    // path at all -- (2^p - 1) mod 1 is 0, which reads as "1 divides M_p".
+    check(ratioModMersenne(3, 1, 1279) == Nat(3), "den == 1 gives the integer start itself");
+  }
+
   printf("\nG2: %d/%d checks passed.\n", checks - failures, checks);
   return failures == 0 ? 0 : 1;
 }

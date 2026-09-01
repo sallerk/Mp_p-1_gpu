@@ -15,7 +15,7 @@
 // change that alters what a result MEANS, so a submitted result can be traced
 // to the code that produced it.
 inline constexpr const char* PROGRAM_NAME = "Mp_p-1_gpu";
-inline constexpr const char* PROGRAM_VERSION = "1.9.3";
+inline constexpr const char* PROGRAM_VERSION = "1.9.4";
 
 // What to do with the console window when the program exits.
 //   AUTO   hold only when launched by double-click, i.e. when closing would
@@ -36,6 +36,21 @@ enum PauseMode { PAUSE_AUTO = 0, PAUSE_ALWAYS, PAUSE_NEVER };
 //                pays to push B1 harder.
 enum Stage2Mode { STAGE2_AUTO = 0, STAGE2_ON, STAGE2_OFF };
 
+// What "factored_to = auto" resolves to: a flat 75 bits, near where GIMPS
+// trial-factors exponents of the size this program is used on.
+//
+// A flat number rather than a ladder keyed on the exponent, deliberately.
+// Either is a guess; a ladder merely looks like it is not one. And it must be
+// SOME plausible depth, not zero: the bounds model integrates from this point
+// upward, so zero asserts "never trial factored", counts every small factor
+// that was ruled out years ago, and answers with near-zero bounds and a
+// success estimate over 100%. Measured at M118845403: factored_to 0 gives
+// B1=B2=10000 and "P=100.120%", against B1=5M B2=200M at the true depth of 77.
+//
+// A worktodo line carrying its own how_far_factored/sieve_depth wins over both
+// this and an explicit config value -- it is per-exponent and current.
+inline constexpr u32 DEFAULT_FACTORED_TO = 75;
+
 struct Config {
   // p in M_p = 2^p - 1; must be prime. Populated per worktodo.txt entry by
   // the driver, not parsed from config.txt -- see Worktodo.h.
@@ -46,11 +61,15 @@ struct Config {
   // P+1 seeds. Each has ~50% chance the Lucas sequence lands in the group that
   // makes it a genuine P+1 rather than a disguised P-1, so several are tried.
   // 2 is excluded: V_n(2,1) == 2 for every n.
-  std::vector<u32> pp1Seeds{3, 5, 7};
+  // Which P+1 runs to try, in order, in Prime95's numbering: 1 is the start
+  // 2/7, 2 is 6/5, 3 and up are random pairs. See Pp1Start in PM1.h. Before
+  // 1.9.4 this held integer Lucas seeds (3, 5, 7); those had none of the
+  // structure Montgomery chose 2/7 and 6/5 for.
+  std::vector<u32> pp1Runs{1, 2, 3};
 
   u64 b1 = 0;                   // 0 == auto
   u64 b2 = 0;                   // 0 == auto; ignored when stage 2 does not run
-  u32 factoredTo = 0;           // TF level in bits; 0 == pick from exponent
+  u32 factoredTo = 0;           // TF level in bits; 0 == unset, see DEFAULT_FACTORED_TO
   double bias = 1.0;            // value of a factor vs a PRP result
 
   // How much worse than the cheapest expected cost is still acceptable, as a
@@ -128,15 +147,30 @@ struct Config {
   // entry, or when the assignment simply omitted them.
   std::string aid;
   std::vector<std::string> knownFactors;
-  // Pfactor='s tests_saved: a GIMPS PRP-credit concept (PRP tests skipped if
-  // a factor turns up) with no equivalent in this program's own cost model --
-  // bias means "value of a factor vs. a composite result", not "tests
-  // saved" -- so this is carried through only to print as FYI, never fed
-  // into chooseBounds/choosePP1Bounds.
+  // Pfactor='s tests_saved: how many primality tests finding a factor would
+  // save -- 2 for a first-time test, 1 for a double-check, fractional in
+  // between. This is the SAME coefficient as `bias` above, not a different
+  // idea: Prime95 prices a failed P-1 at
+  //     ll_testing_cost = (tests_saved + 2*ERROR_RATE) * n * 2
+  // and chooseBounds prices one at exponent + (bias-1)*exponent, which is
+  // bias * exponent. Both are "cost of one test" times "tests a factor would
+  // save". The default bias of 2.0 is exactly PrimeNet's tests_saved for a
+  // first-time test.
+  //
+  // It is still not fed into chooseBounds/choosePP1Bounds, and that is a
+  // choice rather than an oversight: `bias` is a config-wide setting the user
+  // made deliberately, and letting each assignment silently retune the bounds
+  // would take that away. Printed as FYI so the difference is visible when it
+  // matters -- an assignment saying 1.0 against a config saying 2.0 means this
+  // run will pick bounds PrimeNet would call aggressive.
   double testsSaved = 0;
   // Pminus1='s optional B2_start (stage 2 already partly covered elsewhere)
   // cannot be honored -- see Worktodo.h's WorktodoEntry::b2Start comment --
   // so runOneJob prints one warning instead of silently ignoring it.
+  // The FFT length actually chosen for this job, for results.txt's
+  // "fft-length" -- Prime95 reports it and PrimeNet records it, and it is
+  // the one number in the line that describes HOW the work was done.
+  u64 fftLength = 0;
   bool b2StartIgnored = false;
   u64 ignoredB2Start = 0;
 };
@@ -150,4 +184,3 @@ bool parseNumber(const std::string& s, u64& out);
 // A sensible trial-factoring depth when the user does not supply one. These
 // track what GIMPS has actually done at each size, and are only a fallback --
 // a wrong value skews the automatic B1.
-u32 defaultFactoredTo(u32 exponent);

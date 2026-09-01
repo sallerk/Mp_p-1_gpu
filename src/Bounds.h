@@ -148,4 +148,4 @@ int runBoundsTests();
 // --bounds <exponent> [tf] [bias]: print the cost/probability surface around the
 // automatic choice, so the choice can be judged rather than taken on trust.
 void printBoundsSurface(double exponent, u32 factoredTo, double bias,
-                        const CostModel& cost);
+                        const CostModel& cost, u64 fixedB1 = 0, u64 fixedB2 = 0);

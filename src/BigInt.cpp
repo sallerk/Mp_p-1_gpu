@@ -8,6 +8,7 @@
 #include "Parallel.h"
 
 #include <cassert>
+#include <stdexcept>
 #include <cstring>
 #include <algorithm>
 
@@ -691,6 +692,55 @@ Nat mersenne(u32 p) {
   return r;
 }
 
+// num / den mod (2^p - 1), for a SMALL den. This is P+1's starting value:
+// Prime95 starts the Lucas sequence at V_1 = num/den mod N (2/7, 6/5, or a
+// random pair), and a rational start is just a modular inverse.
+//
+// Not an extended GCD. den is at most a couple of hundred, and
+//
+//     r   = (2^p - 1) mod den            -- pow(2, p, den) - 1, small ints only
+//     m   = the m in [0, den) with m*r == -1 (mod den)
+//     inv = (m * (2^p - 1) + 1) / den
+//
+// gives den * inv == m*(2^p - 1) + 1 == 1 (mod 2^p - 1) exactly. One multiply
+// and one divide by a single word, against a full extended GCD over p bits --
+// at p = 185M that is the difference between milliseconds and seconds.
+//
+// Throws when den divides 2^p - 1, which leaves no inverse. That cannot happen
+// for any exponent this program will run: every factor of 2^p - 1 is 1 mod 2p,
+// so the smallest possible one exceeds 2p, and 2p is over 1.5 million at the
+// minimum exponent of 786613. The check is here because "cannot happen" and
+// "is not checked" should not be the same sentence.
+Nat ratioModMersenne(u32 num, u32 den, u32 p) {
+  assert(den > 0);
+  // den == 1 is not a modular inverse: V_1 = num, the integer-seed case this
+  // program used before 1.9.4. Taken early because the general path below
+  // computes (2^p-1) mod 1 == 0 and would read that as "1 divides M_p".
+  if (den == 1) { return Nat(u64(num)); }
+  // (2^p - 1) mod den, without building 2^p - 1 first. Square-and-multiply,
+  // not a loop over p: p reaches 10^8 and this has to cost nothing.
+  u32 twoP = 1;
+  for (u32 base = 2 % den, e = p; e; e >>= 1) {
+    if (e & 1) { twoP = u32((u64(twoP) * base) % den); }
+    base = u32((u64(base) * base) % den);
+  }
+  const u32 r = (twoP + den - 1) % den;
+  if (r == 0) {
+    throw std::runtime_error("P+1 start " + std::to_string(num) + "/" + std::to_string(den)
+                             + ": " + std::to_string(den) + " divides 2^" + std::to_string(p)
+                             + "-1, so the start has no inverse");
+  }
+  u32 m = 0;
+  while ((u64(m) * r) % den != u64(den - 1) % den) { ++m; }
+
+  const Nat M = mersenne(p);
+  Nat q, rem;
+  divrem(add(mul(M, Nat(u64(m))), Nat(1)), Nat(u64(den)), q, rem);
+  assert(rem.isZero());
+  // q is the inverse of den; multiply by num and reduce.
+  return mod(mul(q, Nat(u64(num))), M);
+}
+
 bool fromDecimal(const string& s, Nat& out) {
   if (s.empty()) { return false; }
   Nat r;
@@ -701,6 +751,18 @@ bool fromDecimal(const string& s, Nat& out) {
   }
   out = std::move(r);
   return true;
+}
+
+// The inverse of fromWords: a Nat as the packed 32-bit array the GPU takes.
+// n must already be reduced mod 2^E - 1, so it fits in nWords(E) words.
+Words toWords(const Nat& n, u32 E) {
+  Words out(nWords(E), 0);
+  for (size_t i = 0; i < n.w.size(); ++i) {
+    const size_t lo = i * 2, hi = lo + 1;
+    if (lo < out.size()) { out[lo] = u32(n.w[i]); }
+    if (hi < out.size()) { out[hi] = u32(n.w[i] >> 32); }
+  }
+  return out;
 }
 
 Nat fromWords(const Words& words) {

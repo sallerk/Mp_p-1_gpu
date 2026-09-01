@@ -62,18 +62,6 @@ bool parseNumber(const string& in, u64& out) {
   return true;
 }
 
-u32 defaultFactoredTo(u32 exponent) {
-  // Roughly the depth GIMPS trial-factors to at each size. Only a fallback;
-  // the real value for a given exponent comes from mersenne.org.
-  if (exponent <  20000000u) { return 69; }
-  if (exponent <  40000000u) { return 72; }
-  if (exponent <  60000000u) { return 74; }
-  if (exponent <  80000000u) { return 75; }
-  if (exponent < 100000000u) { return 76; }
-  if (exponent < 200000000u) { return 77; }
-  return 78;
-}
-
 bool loadConfig(const string& path, Config& cfg, string& err) {
   FILE* f = fopen(path.c_str(), "r");
   if (!f) { err = "cannot open '" + path + "'"; return false; }
@@ -115,23 +103,27 @@ bool loadConfig(const string& path, Config& cfg, string& err) {
       else if (lval == "pp1" || lval == "p+1") { cfg.doPM1 = false; cfg.doPP1 = true; }
       else if (lval == "both") { cfg.doPM1 = true;  cfg.doPP1 = true; }
       else { return bad("must be pm1, pp1 or both"); }
-    } else if (key == "pp1_seeds" || key == "seeds") {
-      cfg.pp1Seeds.clear();
+    } else if (key == "pp1_runs" || key == "pp1_seeds" || key == "seeds") {
+      // "pp1_seeds" is kept as an alias, but the values mean run NUMBERS:
+      // 1 = 2/7, 2 = 6/5, 3 = a random pair, and nothing else. An old
+      // "pp1_seeds = 3,5,7" is now refused rather than silently meaning
+      // something different from what it used to.
+      cfg.pp1Runs.clear();
       size_t pos = 0;
       while (pos <= val.size()) {
         const size_t comma = val.find(',', pos);
         const string one = trim(val.substr(pos, comma == string::npos ? string::npos : comma - pos));
         if (!one.empty()) {
           u64 sv = 0;
-          if (!parseNumber(one, sv) || sv < 3 || sv > 1000000) {
-            return bad("seeds must be 3..1000000 (2 is degenerate: V_n(2,1) == 2)");
+          if (!parseNumber(one, sv) || sv < 1 || sv > 3) {
+            return bad("run numbers must be 1, 2 or 3 (2/7, 6/5, or a random start)");
           }
-          cfg.pp1Seeds.push_back(u32(sv));
+          cfg.pp1Runs.push_back(u32(sv));
         }
         if (comma == string::npos) { break; }
         pos = comma + 1;
       }
-      if (cfg.pp1Seeds.empty()) { return bad("needs at least one seed"); }
+      if (cfg.pp1Runs.empty()) { return bad("needs at least one run number"); }
     } else if (key == "b1") {
       if (lval == "auto") { cfg.b1 = 0; }
       else if (!parseNumber(val, n) || n < 2) { return bad("must be >= 2 or 'auto'"); }
@@ -167,6 +159,9 @@ bool loadConfig(const string& path, Config& cfg, string& err) {
       else if (!parseNumber(val, n) || n < 1 || n > 99) { return bad("must be 1..99 or 'auto'"); }
       else { cfg.stage2W = u32(n); }
     } else if (key == "factored_to" || key == "factoredto") {
+      // 0 is the "unset" sentinel, not a value anyone can ask for: telling the
+      // bounds model nothing has been trial-factored is a claim, and a false one
+      // for any real exponent. "auto" resolves to DEFAULT_FACTORED_TO instead.
       if (lval == "auto") { cfg.factoredTo = 0; }
       else if (!parseNumber(val, n) || n < 1 || n > 127) { return bad("must be 1..127 or 'auto'"); }
       else { cfg.factoredTo = u32(n); }

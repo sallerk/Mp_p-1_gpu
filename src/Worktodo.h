@@ -65,12 +65,9 @@ struct WorktodoEntry {
                                           // sieve_depth (Pminus1) was present
   u32 factoredTo = 0;                     // bits, floored; same range as Config::factoredTo
 
-  // Pplus1='s nth_run: Prime95 uses it to pick a starting value (1 -> 2/7,
-  // 2 -> 6/5, 3+ -> random). This program's P+1 is parameterised by an integer
-  // seed instead (config.txt's pp1_seeds, default 3,5,7), so there is no
-  // faithful translation. It is taken as a 1-based index into pp1_seeds, which
-  // preserves what nth_run is FOR -- independent attempts at the same exponent
-  // -- without pretending to reproduce Prime95's own start values. 0 = absent.
+  // Pplus1='s nth_run, which selects the starting point exactly as it does
+  // in Prime95: 1 is 2/7, 2 is 6/5, 3 and above a random pair. See Pp1Start
+  // in PM1.h. 0 = absent.
   u32 pp1NthRun = 0;
 
   double testsSaved = 0;                  // Pfactor= only; FYI, see Config.h's note

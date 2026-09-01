@@ -1,5 +1,176 @@
 # Changelog
 
+## 1.9.4
+
+**P+1 starts where Prime95 starts, results.txt matches Prime95 field for
+field, and the whole worktodo path has an acceptance harness.**
+
+### P+1: the starting point is a rational, not an integer seed
+
+Prime95 begins the Lucas sequence at `V_1 = num/den mod M_p` and reports it as
+`"start":"2/7"`. This program used integer seeds (`pp1_seeds = 3,5,7`).
+Montgomery's choices are not arbitrary labels: `2/7` finds every factor `q`
+whose `q+1` is divisible by 6, `6/5` every one whose `q+1` is divisible by 4,
+and an integer seed has neither property. On M4444091 at B1=1000, `2/7` and
+`6/5` each find 319974553 in stage 1 where seed 3 found nothing at all. So
+emitting `"start":"2/7"` while running seed 3 would not have been a white lie
+-- it would have been worse work reported as better.
+
+`nth_run` on a `Pplus1=` line now means what it means in Prime95: 1 is `2/7`,
+2 is `6/5`, 3 and up a numerator in 72..199 over one of sixteen small primes.
+The random pair is *derived* from `(exponent, run)` rather than drawn from the
+clock, so a resumed run recomputes the start it was already using; Prime95
+draws it with `rand()` and must store the pair in its save file to survive a
+restart.
+
+`num/den mod (2^p - 1)` needs no extended GCD. `den` is small, so
+`inv = (m*(2^p-1) + 1)/den` for the `m` in `[0,den)` with
+`m*((2^p-1) mod den) == -1 (mod den)`: one multiply and one divide by a single
+word, where a general inverse over 185 million bits would be seconds.
+
+`Gpu::lucasV`'s ladder is now shared with a residue-seeded variant,
+`lucasVBase`; `lucasVResidue` already did this for stage 2's `V_D`, so both
+halves were in production use before being combined. `pp1_seeds` becomes
+**`pp1_runs`**, holding run numbers, and P+1 writes one result per run as
+Prime95 does. **P+1 checkpoints in flight are orphaned** by the rename from
+`_s<seed>` to `_n<num>d<den>`; P-1 checkpoints are untouched.
+
+### results.txt
+
+New fields: **`fft-length`** on every worktype, **`start`** on P+1 lines, and
+**`d`** on P-1 lines whose stage 2 produced the result. Field order and spacing
+match Prime95 exactly, and `known-factors` moved between `timestamp` and
+`user` with `aid` last, where Prime95 puts them. **`user` and `computer` are
+documented in config.txt** at last -- the parser always accepted them, the
+template never mentioned them, so results went up unattributed.
+
+Six fields Prime95 writes are deliberately absent. `security-code` is its SEC5
+checksum over its own internal state. `poly1-size`, `poly2-size` and
+`stage2-fft-length` all live inside its `stage2_type == PM1_STAGE2_POLYMULT`
+branch and describe the polynomial multiplication its stage 2 uses from 30.8
+on -- this program pairs primes in Montgomery's scheme, so a correct FFT length
+filed under a key meaning "polymult ran" would be worse than no field.
+`build` and `port` describe a Prime95 install.
+
+The writer moved to `src/Results.{h,cpp}`, because its field set is a contract
+with another program and it had internal linkage in main.cpp, so nothing could
+exercise it. `--selftest=results` now checks the field set and *order* of all
+eight line shapes, that the six forbidden fields never appear, and that `d`
+belongs to P-1 while `start` belongs to P+1. Verified by mutation: putting the
+`stage2-fft-length` bug back fails 5 of its 11 checks.
+
+### worktodo.txt
+
+**`Pminus1=` can give B1 alone.** `B2 = 0`, `B2 = B1` and any `B2 < B1` all
+mean stage 1 alone -- Prime95's own idiom, since it clamps `C` up to `B` and
+gates every stage-2 field on `C > B`. All three used to be a hard error,
+leaving `stages = 1` in config.txt as the only way to ask, which applies to the
+whole queue rather than one assignment. Such a line overrides config.txt
+completely. The `B2` FIELD is still required, as it is in Prime95, whose reader
+rejects a line stopping after B1. Stage 2's B1 floor of 105 now applies only
+when a stage 2 actually follows.
+
+**A `Pfactor=` line's `tests_saved` sets the bias for that entry.** The two are
+the same coefficient -- the multiplier on the cost of coming up empty. Prime95
+prices a failed P-1 at `(tests_saved + 2*ERROR_RATE) * n * 2`; `chooseBounds`
+prices one at `bias * exponent`. The assignment is the better information:
+PrimeNet knows whether this exponent still needs two primality tests or one.
+`tests_saved = 0` is treated as absent, since Prime95 writes it to mean "P-1
+already done". It is validated for the first time now that it is read: 0..100,
+positive form so NaN is refused.
+
+**Two more validation holes**, both found by the harness below.
+`how_far_factored` accepted NaN -- the test was `howFar < 1 || howFar > 127`,
+and NaN is false against both, so it reached `u32(floor(NaN))`. 1.9.1 rewrote
+the exponent and B1/B2 tests in positive form for exactly this reason and
+missed this one. And anything after the known-factors quote was silently
+ignored: `Pminus1=...,"16004369",9` parsed, ran, and never mentioned the 9.
+
+MANUAL.md also documents **where the assignment ID goes** -- first, before
+`k`, 32 hex characters and a comma -- with a field layout for all three
+keywords.
+
+### config.txt
+
+Every setting a worktodo line can override now says so, in all six places:
+the two bounds, `factored_to`, `bias`, `stages` and `method`. Each of those
+precedence rules already existed; none was written where someone setting the
+value would see it.
+
+`factored_to = auto` is a flat **75 bits**. The size-keyed ladder is gone --
+either is a guess, and a ladder merely looks like it is not one. It cannot be
+zero, because zero is not "no assumption" to the bounds model but the claim
+"never trial factored": at M118845403 that yields `B1 = B2 = 10000` and a
+reported success chance of 100.120%, against `B1 = 5M, B2 = 200M` at the true
+depth of 77. Values below about 40 are wrong the same way, just less visibly --
+1 still claims 99.8%. Its precedence also stopped being the exception: the
+worktodo line now wins over an explicit config value, as everything else does,
+because `how_far_factored` is per-exponent where the config value is one number
+for a whole queue.
+
+`pp1_runs` and a `Pplus1=` line's `nth_run` accept only 1, 2 and 3, which
+exhaust the distinct behaviours. Prime95 accepts higher values, each drawing a
+fresh random pair; this program derives its random start from `(exponent, run)`
+so that a resumed run recomputes it, which also makes run 4 no more independent
+of run 3 than a second roll of a fixed die.
+
+`wait_for_work` defaults to **yes**, so an empty queue waits for AutoPrimeNet
+to fill it rather than exiting -- which is what the pairing needs, and what
+anyone running the two together had to edit the file to get.
+
+The file is reordered: who the result belongs to first, stages after the bounds
+they depend on, the P+1 run list after that.
+
+### --bounds
+
+It described a job nobody was going to run, three ways. It never received
+`cfg.b1`/`cfg.b2`, so pinned bounds were ignored and it surveyed the auto space
+instead. The peek that scopes it to the next queued exponent took only the
+exponent, so a line carrying its own bounds, depth or `tests_saved` was
+surveyed at config.txt's values. And it printed the tolerance sweep even with
+bounds pinned, where the knob does nothing at all -- one candidate leaves the
+tolerance band nothing to choose between. All three fixed; with bounds pinned
+it now says so and skips the sweep.
+
+### one more validation hole
+
+`B1` was tested with `!(b1 >= 2)`, positive form so that NaN is refused -- and
+it is. Infinity is not: it satisfies every `>=` test there is, so `inf` parsed,
+passed, and reached `u64(inf + 0.5)`, which is undefined. B2 was safe only by
+accident, having the machine-word cap above it; B1 had nothing. It now takes
+the same 2..4e9 range, which also excludes the merely absurd.
+
+### tools/genmatrix.py and tools/checkmatrix.py
+
+The acceptance harness, in two scenarios:
+
+  - `accept`: 67 worktodo lines over M1000273, one distinct path each, checked
+    against a predicted status, factor set and field set, and against what the
+    job RESOLVED `factored_to` and `bias` to -- read back from its own startup
+    line, so the precedence chain is verified rather than assumed. Twelve log
+    assertions; 61 malformed lines fed in one at a time, since the queue is
+    fail-fast and a bad line cannot share a file with good ones; and 8 lines
+    that are valid but too costly to run, checked through `--bounds`.
+  - `resume`: three lines at one (exponent, B1) with rising B2 and
+    checkpointing ON, the only way to reach this program's own B2 extension.
+    Asserts the second walks only (525, 2000] instead of redoing (200, 2000],
+    and that an identical third walks nothing. Nothing previously drove that
+    path through a worktodo line; `--selftest=b2extend` covers the plan and GPU
+    level only.
+
+That is a different feature from a `Pminus1=` line's `B2_start`, which is
+PrimeNet declaring work done somewhere else and cannot be honoured here -- the
+matrix covers that separately, including the case where Prime95's own writer
+omits `sieve_depth` so the B2_start lands in that slot, where both programs
+discard it and the value is lost.
+
+Two rules the matrix had to learn are written into the generator with the
+measurements behind them: stage 1's exponent carries `q^floor(log_q B1)`, so a
+`k` of `2^3` needs B1 >= 8 (B1=7 misses, B1=8 finds); and stage 2's grid
+reaches past B2 to `mLast*D + jmax`, so with D=210 a B2 of 858 finds a factor
+whose missing prime is 859 while 525 does not. Neither is a defect -- both are
+the program being more capable than a naive model of it.
+
 ## 1.9.3
 
 **A `Pminus1=` assignment ran P+1 as well, if config.txt said `method = both`.**

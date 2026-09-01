@@ -7,6 +7,20 @@
 
 
 # ---------------------------------------------------------------------------
+#  WHO THE RESULT BELONGS TO.  Both optional, both echoed into results.txt as
+#  "user" and "computer" -- the same fields Prime95 writes, so a manual upload
+#  to mersenne.org's "Manual Results" page is credited to the right account.
+#  Leave empty to omit them from the line entirely.
+#
+#  `user` is your mersenne.org username, NOT your email address.
+#  `computer` is whatever name you use for this machine; it only has to be
+#  consistent, PrimeNet does not check it against anything.
+# ---------------------------------------------------------------------------
+user =
+computer =
+
+
+# ---------------------------------------------------------------------------
 #  THE MERSENNE NUMBER(S).  M_p = 2^p - 1, p must be PRIME.
 #
 #  As of 1.4, the exponent (or exponents) to work on are no longer set here --
@@ -26,22 +40,23 @@
 #           afterward -- there is no "stop, a factor is already in hand" check
 #           ACROSS methods yet (only within one method's own stage 1 -> stage 2).
 #
+#  SUPERSEDED BY THE WORKTODO LINE: a Pminus1= entry runs P-1 and only P-1, a
+#  Pplus1= entry runs P+1 and only P+1, whatever is set here. A Pfactor= line
+#  and a bare exponent name no method and use this setting -- Pfactor= asks for
+#  "enough factoring to decide whether a primality test is worth running", not
+#  for one particular method.
+#
 #  P+1 has its own B1 and B2 model now (`b1`/`b2` below apply to BOTH methods,
 #  each optimising its own bounds against the same exponent/bias/tolerance --
 #  they are not forced to the same B1 or B2). Still shares P-1's `stage2_d`/
 #  `stage2_w` pairing SHAPE, a GPU-memory budget decision, not a cost-model gap.
 #
-#  P+1 needs a base ("seed"); which seeds find a factor depends on q in a way
-#  that cannot be known in advance (roughly half of seeds degenerate into a
-#  P-1-shaped computation for a given q), so several are tried per exponent.
+#  P+1 needs a starting point; whether a given one finds a factor depends on q
+#  in a way that cannot be known in advance (roughly half of starts degenerate
+#  into a P-1-shaped computation for a given q), so several are tried per
+#  exponent. See pp1_runs below.
 # ---------------------------------------------------------------------------
 method = both
-
-# A comma-separated LIST of literal seed values (each 3..1000000), NOT a
-# count -- "pp1_seeds = 3" tries exactly ONE seed, the value 3, not three
-# seeds. For the usual several-seeds coverage write out the list, e.g.
-# "pp1_seeds = 3,5,7".
-pp1_seeds = 3
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +66,10 @@ pp1_seeds = 3
 #
 #  "auto" picks the B1 that minimises expected total work, using Dickman's rho
 #  to weigh the chance of success against the cost. It needs factored_to below.
+#
+#  SUPERSEDED BY THE WORKTODO LINE. A Pfactor=/Pminus1=/Pplus1= entry that
+#  carries its own value for this wins for that entry; the setting here is
+#  what a bare exponent uses, and the fallback when a line is silent.
 #
 #  With a stage 2 following, "auto" picks a SMALLER B1 than it would for a
 #  stage-1-only run -- the second stage catches the near misses, so paying for
@@ -65,6 +84,10 @@ b1 = auto
 # something like 30x B1. Ignored (and rejected as a contradiction) if stages = 1
 # (see WHICH STAGES TO RUN, below).
 #
+# SUPERSEDED BY THE WORKTODO LINE: a Pminus1=/Pplus1= entry carries its own
+# B1/B2 and wins for that entry. B2 <= B1 there means stage 1 alone, whatever
+# `stages` says here.
+#
 # Raising b2 after a stage 2 has finished walks only the new range, so working an
 # exponent upwards in steps costs the same as going straight to the final bound.
 # Note that `auto` does NOT know what is already on disk -- if you are stepping
@@ -73,19 +96,83 @@ b2 = auto
 
 
 # ---------------------------------------------------------------------------
+#  WHICH STAGES TO RUN.
+#
+#  Stage 1 finds a factor q = 2kp+1 when k is entirely B1-smooth. Stage 2 also
+#  finds it when k is B1-smooth APART FROM ONE prime in (B1, B2] -- which is by
+#  far the most common near-miss, so stage 2 roughly doubles the yield for
+#  comparable work.
+#
+#  SUPERSEDED BY THE WORKTODO LINE: a Pminus1=/Pplus1= entry whose B2 is at or
+#  below its B1 runs stage 1 alone regardless of what is set here.
+#
+#    auto   (default) let the bounds model decide. It may still decline stage 2:
+#           on a small exponent at bias 1 a PRP test is cheap enough that P-1
+#           barely pays for itself, and a second stage does not earn its place.
+#    both   always run stage 2, even where the model would not choose it.
+#    1      stage 1 only. B1 is then optimised on its own, which makes it LARGER
+#           than it would be with a stage 2 following -- with no second stage
+#           there is nothing else to catch a near-miss, so it pays to push B1
+#           harder.
+#
+#  `stages` counts stages, so 1 means stage 1 only and 2 means both. If you
+#  prefer a yes/no switch use `stage2 = yes | no | auto` instead; the two keys
+#  are separate precisely so that neither reads backwards.
+# ---------------------------------------------------------------------------
+stages = auto
+
+
+# Which P+1 RUNS to try, comma-separated, in Prime95's own numbering:
+#
+#    1   start 2/7   finds every factor q whose q+1 is divisible by 6
+#    2   start 6/5   finds every factor q whose q+1 is divisible by 4
+#    3   a random start (numerator 72..199 over a small prime), no structure
+#
+# Those are Peter Montgomery's choices, and the reason to run 1 before 2, and
+# both before any random start. This is a LIST, not a count: "pp1_runs = 1"
+# tries exactly ONE run. Write "pp1_runs = 1,2,3" for the usual coverage.
+# Only 1, 2 and 3 are accepted, here and in a Pplus1= line's nth_run.
+#
+# SUPERSEDED BY THE WORKTODO LINE: a Pplus1= entry carries its own nth_run and
+# runs that one alone. This list is what a bare exponent or a `method = pp1`
+# config-driven run uses.
+pp1_runs = 1,2,3
+
+
+# ---------------------------------------------------------------------------
 #  HOW FAR THE EXPONENT HAS ALREADY BEEN TRIAL FACTORED, in bits.
 #  Only used to choose "auto" bounds: a factor below this is already known not
 #  to exist, so the model does not pay for the chance of finding one.
-#  The true value for an exponent is on mersenne.org. "auto" guesses from the
-#  size of the exponent, which is a fallback, not a substitute.
+#  The true value for an exponent is on mersenne.org.
+#
+#  "auto" (the default) means 75 BITS -- a flat number, near where GIMPS trial-
+#  factors exponents of the size this program is used on. It is a guess, and a
+#  real depth from mersenne.org is always better; set one here if you have it.
+#
+#  It cannot be zero. Zero is not "no assumption" to the bounds model -- it is
+#  the claim "this exponent has never been trial factored", which the model
+#  believes, counting every small factor that was ruled out years ago. At
+#  M118845403 that yields B1 = B2 = 10000 and a reported success chance over
+#  100%, against B1 = 5M, B2 = 200M at the true depth of 77. Values below about
+#  40 are wrong in the same direction, just less obviously: 1 still claims 99.8%.
+#
+#  SUPERSEDED BY THE WORKTODO LINE: a Pfactor= line's how_far_factored, or a
+#  Pminus1=/Pplus1= line's sieve_depth, is used instead for that entry -- it is
+#  per-exponent and current, where this is one number for the whole queue. The
+#  value here applies to a bare exponent, and to any line that omits its own.
 # ---------------------------------------------------------------------------
-factored_to = 70
+factored_to = auto
 
 
 # ---------------------------------------------------------------------------
 #  HOW MUCH A FACTOR IS WORTH relative to a PRP "composite" result.
 #  1.0 = equally valuable. 2.0 = a factor is worth two PRP tests, which pushes
 #  "auto" towards larger bounds. Ignored when b1 is set explicitly.
+#
+#  SUPERSEDED BY THE WORKTODO LINE: a Pfactor= entry's tests_saved is the same
+#  coefficient and is used instead for that entry -- PrimeNet knows whether the
+#  exponent still needs two primality tests or one. tests_saved = 0 means "P-1
+#  already done" and is treated as absent, so this value stands.
 # ---------------------------------------------------------------------------
 bias = 2.0
 
@@ -145,6 +232,8 @@ device = auto
 # ---------------------------------------------------------------------------
 worktodo_file = worktodo.txt
 results_file = results.txt
+
+
 report_every = 1000
 
 
@@ -197,11 +286,16 @@ extend = 1
 # ---------------------------------------------------------------------------
 #  AUTOPRIMENET INTEROP.
 #
-#  worktodo.txt accepts Pfactor=/Pminus1= assignment lines alongside plain
-#  exponents. BOTH are P-1 work -- this program does not do trial factoring
-#  (bit-depth-range TF, which Prime95 calls "Factor=", a different keyword
-#  this program does not recognise) -- they differ only in who picks B1/B2:
-#    Pminus1=  PrimeNet already chose B1/B2; use them as-is (see below).
+#  worktodo.txt accepts Pfactor=, Pminus1= and Pplus1= assignment lines
+#  alongside plain exponents. None of them is trial factoring -- this program
+#  does not do bit-depth-range TF, which Prime95 calls "Factor=", a keyword it
+#  does not recognise. They differ in who picks the bounds, and which method
+#  runs:
+#    Pminus1=  P-1, with B1/B2 already chosen; used as-is (see below).
+#    Pplus1=   P+1, likewise, plus the run number that fixes the start.
+#              PrimeNet does not issue these -- its work type 6 is marked
+#              "not yet supported by the server" -- so they are hand-written
+#              or come from Prime95 itself.
 #    Pfactor=  no B1/B2 given -- just how far this exponent has already
 #              been trial-factored and what a factor is worth in saved
 #              PRP-test credit. The client is expected to pick its own
@@ -220,7 +314,7 @@ extend = 1
 #  whenever present, on the theory that PrimeNet's assignment is the whole
 #  reason to run AutoPrimeNet alongside this program in the first place. A
 #  Pfactor= line or a bare exponent has none to honor, and falls back to
-#  b1/b2 below (auto by default), same as always.
+#  b1/b2 above (auto by default), same as always.
 # ---------------------------------------------------------------------------
 
 # Instead of exiting when worktodo.txt runs dry, wait and keep re-checking it
@@ -230,7 +324,7 @@ extend = 1
 #   wait_for_work        yes | no  (also accepts 1/0, true/false, on/off)
 #   wait_poll_seconds     how often to recheck the queue while waiting, in
 #                          seconds -- only used when wait_for_work = yes
-wait_for_work = no
+wait_for_work = yes
 wait_poll_seconds = 5
 
 
@@ -256,29 +350,6 @@ wait_poll_seconds = 5
 # ---------------------------------------------------------------------------
 bounds_tolerance = 0.05
 
-
-# ---------------------------------------------------------------------------
-#  WHICH STAGES TO RUN.
-#
-#  Stage 1 finds a factor q = 2kp+1 when k is entirely B1-smooth. Stage 2 also
-#  finds it when k is B1-smooth APART FROM ONE prime in (B1, B2] -- which is by
-#  far the most common near-miss, so stage 2 roughly doubles the yield for
-#  comparable work.
-#
-#    auto   (default) let the bounds model decide. It may still decline stage 2:
-#           on a small exponent at bias 1 a PRP test is cheap enough that P-1
-#           barely pays for itself, and a second stage does not earn its place.
-#    both   always run stage 2, even where the model would not choose it.
-#    1      stage 1 only. B1 is then optimised on its own, which makes it LARGER
-#           than it would be with a stage 2 following -- with no second stage
-#           there is nothing else to catch a near-miss, so it pays to push B1
-#           harder.
-#
-#  `stages` counts stages, so 1 means stage 1 only and 2 means both. If you
-#  prefer a yes/no switch use `stage2 = yes | no | auto` instead; the two keys
-#  are separate precisely so that neither reads backwards.
-# ---------------------------------------------------------------------------
-stages = auto
 
 # ---------------------------------------------------------------------------
 #  STAGE-2 PAIRING SHAPE.  Leave both on auto unless you are experimenting.

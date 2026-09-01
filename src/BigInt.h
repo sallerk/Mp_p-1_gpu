@@ -70,6 +70,11 @@ Nat mod(const Nat& u, const Nat& v);
 // 2^p - 1
 Nat mersenne(u32 p);
 
+// num / den mod (2^p - 1), for a small den -- P+1's rational starting
+// value (Prime95's 2/7, 6/5, or a random pair). Throws if den divides
+// 2^p - 1; see the definition for why that cannot happen in practice.
+Nat ratioModMersenne(u32 num, u32 den, u32 p);
+
 // Decimal string -> Nat. Returns false on any non-digit.
 bool fromDecimal(const std::string& s, Nat& out);
 
@@ -89,3 +94,6 @@ bool isProbablePrime(const Nat& n);
 
 // The GPU residue is a packed little-endian bit array of 32-bit words.
 Nat fromWords(const Words& words);
+
+// ... and back, for a value already reduced mod 2^E - 1.
+Words toWords(const Nat& n, u32 E);

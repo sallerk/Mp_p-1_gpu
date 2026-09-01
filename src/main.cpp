@@ -31,6 +31,7 @@
 #include "Gpu.h"
 #include "GpuCommon.h"
 #include "PM1.h"
+#include "Results.h"
 #include "Queue.h"
 #include "Stage2Plan.h"
 #include "TrigBufCache.h"
@@ -248,87 +249,6 @@ void usage() {
 "automatically; a resumed walk reproduces the accumulator bit for bit.\n");
 }
 
-// One line per PRIME. A gcd routinely carries several factors multiplied
-// together -- every one whose k was smooth comes out of the same gcd -- so
-// reporting it raw would be a composite masquerading as a factor.
-// One JSON object per line, the shape PrimeNet accepts and the same convention
-// Prime95 uses for its own results.txt -- so the file can be uploaded to
-// mersenne.org's "Manual Results" page as-is.
-//
-//   {"status":"F","exponent":81679223,"worktype":"P-1","b1":2000000,
-//    "b2":60000000,"factors":["..."],"program":{"name":"...","version":"1.0"},
-//    "timestamp":"2026-07-28 17:29:54"}
-//
-// When the job came from a Pfactor=/Pminus1= worktodo entry (see Worktodo.h),
-// "aid" and "known-factors" are added the same way "user"/"computer" already
-// are -- present only when the assignment carried them, so AutoPrimeNet's own
-// upload step can match this line back to the assignment it came from.
-//
-// Only factors that are PRIME and verified to divide M_p are reported as
-// factors: a gcd routinely carries several multiplied together, and submitting
-// that product would be a composite masquerading as a factor. Anything that
-// could not be split is written with status "C" and is not a submittable
-// result -- it is recorded so the run is not silently lost.
-void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
-                     const std::vector<FoundFactor>& factors, u32 seed) {
-  FILE* f = fopen(cfg.resultsFile.c_str(), "a");
-  if (!f) {
-    printf("  WARNING: could not append to %s\n", cfg.resultsFile.c_str());
-    return;
-  }
-
-  char stamp[32] = "";
-  const time_t now = time(nullptr);
-  struct tm utc;
-  if (gmtime_s(&utc, &now) == 0) { strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &utc); }
-
-  auto common = [&]() {
-    fprintf(f, ",\"exponent\":%u,\"worktype\":\"%s\",\"b1\":%llu", cfg.exponent,
-            worktype, (unsigned long long) b1);
-    if (b2 > b1) { fprintf(f, ",\"b2\":%llu", (unsigned long long) b2); }
-    if (seed) { fprintf(f, ",\"seed\":%u", seed); }
-    fprintf(f, ",\"program\":{\"name\":\"%s\",\"version\":\"%s\"}", PROGRAM_NAME, PROGRAM_VERSION);
-    fprintf(f, ",\"timestamp\":\"%s\"", stamp);
-    if (!cfg.username.empty()) { fprintf(f, ",\"user\":\"%s\"", cfg.username.c_str()); }
-    if (!cfg.computerName.empty()) { fprintf(f, ",\"computer\":\"%s\"", cfg.computerName.c_str()); }
-    if (!cfg.aid.empty()) { fprintf(f, ",\"aid\":\"%s\"", cfg.aid.c_str()); }
-    if (!cfg.knownFactors.empty()) {
-      fprintf(f, ",\"known-factors\":[");
-      for (size_t i = 0; i < cfg.knownFactors.size(); ++i) {
-        fprintf(f, "%s\"%s\"", i ? "," : "", cfg.knownFactors[i].c_str());
-      }
-      fprintf(f, "]");
-    }
-  };
-
-  std::vector<const FoundFactor*> good, bad;
-  for (const FoundFactor& ff : factors) {
-    ((ff.prime && ff.dividesMp) ? good : bad).push_back(&ff);
-  }
-
-  if (!good.empty()) {
-    fprintf(f, "{\"status\":\"F\"");
-    common();
-    fprintf(f, ",\"factors\":[");
-    for (size_t i = 0; i < good.size(); ++i) {
-      fprintf(f, "%s\"%s\"", i ? "," : "", good[i]->value.dec().c_str());
-    }
-    fprintf(f, "]}\n");
-  }
-  for (const FoundFactor* ff : bad) {
-    fprintf(f, "{\"status\":\"C\"");
-    common();
-    fprintf(f, ",\"composite\":\"%s\",\"note\":\"%s\"}\n", ff->value.dec().c_str(),
-            ff->dividesMp ? "could not be split into primes"
-                          : "DOES NOT DIVIDE M_p -- please report");
-  }
-  if (good.empty() && bad.empty()) {
-    fprintf(f, "{\"status\":\"NF\"");
-    common();
-    fprintf(f, "}\n");
-  }
-  fclose(f);
-}
 
 // A factor the assignment itself already declared (Worktodo.h's known_factors)
 // is not a discovery. Its k is B1-smooth by construction -- that is why it is
@@ -372,7 +292,8 @@ void dropKnownFactors(const Config& cfg, Result& res) {
 // results file on purpose: that one is machine-readable for submission,
 // this is for the person (or the log) watching.
 void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
-                   u64 b1, u64 b2, const char* worktype, u32 seed) {
+                   u64 b1, u64 b2, const char* worktype, const Pp1Start* start,
+                   u32 stage2D) {
   if (factors.size() > 1) {
     log("  the gcd was a product of %zu factors (every factor with a\n"
         "  B1-smooth k comes out of the same gcd):\n\n", factors.size());
@@ -392,7 +313,7 @@ void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
           ff.value.dec().c_str(), cfg.exponent);
     }
   }
-  writeResultJson(cfg, worktype, b1, b2, factors, seed);
+  writeResultJson(cfg, worktype, b1, b2, factors, start, stage2D);
 }
 
 } // namespace
@@ -544,6 +465,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
          (unsigned long long) fft.size(), double(cfg.exponent) / fft.size());
 
   auto gpu = Gpu::make(&queue, cfg.exponent, shared, fft, {}, false);
+  cfg.fftLength = fft.size();   // results.txt "fft-length"
 
   CostModel cost;
   cost.gcdIters = gcdIterCost(cfg.exponent);
@@ -585,7 +507,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // methods running at once. `stages = 1` still means "no stage 2 for
   // either method," a single consistent switch (wantAnyStage2 above).
   const Bounds pp1Bounds = choosePP1Bounds(cfg.exponent, cfg.factoredTo, cfg.bias, cost,
-                                           u32(cfg.pp1Seeds.size()), cfg.b1, cfg.b2,
+                                           u32(cfg.pp1Runs.size()), cfg.b1, cfg.b2,
                                            wantAnyStage2);
   const u64 pp1B1 = pp1Bounds.b1;
   const bool wantPp1Stage2 = cfg.doPP1 && cfg.stage2Mode != STAGE2_OFF && pp1Bounds.b2 > pp1B1;
@@ -628,12 +550,9 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   }
 
   const bool anyRunStage2 = runStage2 || wantPp1Stage2;
-  printf("  M%u, trial-factored to %u bits, bias %.1f\n", cfg.exponent, cfg.factoredTo, cfg.bias);
+  printf("  M%u, trial-factored to %u bits, bias %.1f%s\n", cfg.exponent, cfg.factoredTo,
+         cfg.bias, cfg.testsSaved > 0 ? " (the assignment's tests_saved)" : "");
   if (!cfg.aid.empty()) { printf("  AID %s\n", cfg.aid.c_str()); }
-  if (cfg.testsSaved > 0) {
-    printf("  assignment tests_saved = %.2f (informational only -- no equivalent\n"
-           "    in this program's own cost model)\n", cfg.testsSaved);
-  }
   if (cfg.b2StartIgnored) {
     printf("  WARNING: assignment specifies B2_start=%llu (stage 2 partially covered\n"
            "    elsewhere) -- this program cannot import externally-computed stage-2\n"
@@ -645,12 +564,12 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     // per-method sections below are already labelled.
     printf("  P-1: B1 = %llu%s\n", (unsigned long long) b1, cfg.b1 ? "" : " (auto)");
     printf("  P+1: B1 = %llu%s (%u seeds)\n", (unsigned long long) pp1B1,
-           cfg.b1 ? "" : " (auto)", u32(cfg.pp1Seeds.size()));
+           cfg.b1 ? "" : " (auto)", u32(cfg.pp1Runs.size()));
   } else if (cfg.doPM1) {
     printf("  B1 = %llu%s\n", (unsigned long long) b1, cfg.b1 ? "" : " (auto)");
   } else {
     printf("  B1 = %llu%s (%u seeds)\n", (unsigned long long) pp1B1,
-           cfg.b1 ? "" : " (auto)", u32(cfg.pp1Seeds.size()));
+           cfg.b1 ? "" : " (auto)", u32(cfg.pp1Runs.size()));
   }
   if (anyRunStage2) {
     if (runStage2 && wantPp1Stage2) {
@@ -673,6 +592,12 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   } else if (cfg.stage2Mode == STAGE2_OFF) {
     printf("  stage 2 disabled (stages = 1); B1 is optimised alone, which makes\n"
            "  it larger than it would be with a stage 2 to catch near-misses\n");
+  } else if (cfg.b1 && cfg.b2 == cfg.b1) {
+    // Pinned bounds with B2 == B1: the assignment (or config.txt) asked for
+    // stage 1 and nothing else. Say so, rather than let the "not worth it"
+    // message below imply the cost model made this choice.
+    printf("  stage 2 not requested -- the bounds give B1 only, so stage 1 runs\n"
+           "  alone whatever `stages` says\n");
   } else {
     printf("  stage 2 not worth running at this exponent and bias -- raise `bias`\n"
            "  if a factor is worth more to you than one PRP test\n");
@@ -689,10 +614,10 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     if (wantPp1Stage2) {
       printf("  estimated P+1 success %.3f%%  (stage 1 %.3f%% + stage 2 %.3f%%, %u seeds)\n",
              pp1Bounds.prob() * 100, pp1Bounds.probStage1 * 100, pp1Bounds.probStage2 * 100,
-             u32(cfg.pp1Seeds.size()));
+             u32(cfg.pp1Runs.size()));
     } else {
       printf("  estimated P+1 success %.3f%%  (%u seeds)\n",
-             pp1Bounds.probStage1 * 100, u32(cfg.pp1Seeds.size()));
+             pp1Bounds.probStage1 * 100, u32(cfg.pp1Runs.size()));
     }
   }
   printf("\n");
@@ -700,50 +625,51 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // ---- P+1, if asked for ---------------------------------------------------
   // Run before P-1 only when P-1 is not also requested; otherwise P-1 first,
   // since it is half the cost per bound and more likely to succeed.
-  bool anyFactor = false;
   if (cfg.doPP1) {
     gPhaseTotal = wantPp1Stage2 ? 5 : 3;
-    u32 seedIx = 0;
-    for (u32 seed : cfg.pp1Seeds) {
+    u32 attempt = 0;
+    for (u32 run : cfg.pp1Runs) {
       if (gInterrupted.load()) { break; }
-      // Index AND value: the default seeds are 3, 5, 7 and there are 3 of
-      // them, so "seed 3 (of 3)" read as though it were the last one.
-      printf("\n  P+1 attempt %u of %u (seed %u)\n", ++seedIx,
-             u32(cfg.pp1Seeds.size()), seed);
-      PP1Result pr = runPP1Stage1(*gpu, cfg, pp1B1, seed, true);
+      // Run number -> starting point, Prime95's table: 1 is 2/7, 2 is 6/5,
+      // 3 and up a random pair. See Pp1Start::forRun.
+      const Pp1Start start = Pp1Start::forRun(run, cfg.exponent);
+      printf("\n  P+1 attempt %u of %u (run %u, start %s)\n", ++attempt,
+             u32(cfg.pp1Runs.size()), run, start.label().c_str());
+      PP1Result pr = runPP1Stage1(*gpu, cfg, pp1B1, start, true);
       if (pr.interrupted) {
-        log("\n  interrupted; P+1 progress for seed %u is checkpointed.\n", seed);
+        log("\n  interrupted; P+1 progress for start %s is checkpointed.\n",
+            start.label().c_str());
         return 1;
       }
       dropKnownFactors(cfg, pr);
       if (pr.foundFactor) {
-        anyFactor = true;
-        reportFactors(cfg, pr.factors, pp1B1, pp1B1, "P+1", seed);
-        break;                      // no point trying further seeds
+        reportFactors(cfg, pr.factors, pp1B1, pp1B1, "P+1", &start, 0);
+        break;                      // no point trying further starts
       }
-      log("  P+1 seed %u: no factor\n", seed);
+      log("  P+1 start %s: no factor\n", start.label().c_str());
 
       // Only when stage 1 came up empty for this seed -- a factor already in
       // hand makes the second stage wasted work, exactly like P-1's own rule.
       if (wantPp1Stage2 && !gInterrupted.load()) {
-        PP1Stage2Result s2 = runPP1Stage2(*gpu, cfg, pr.residue, seed, pp1B1,
+        PP1Stage2Result s2 = runPP1Stage2(*gpu, cfg, pr.residue, start, pp1B1,
                                           pp1Bounds.b2, shape.d, shape.w, true);
         if (s2.interrupted) {
-          log("\n  interrupted during P+1 stage 2 for seed %u; resume by running again.\n", seed);
+          log("\n  interrupted during P+1 stage 2 for start %s; resume by running again.\n",
+              start.label().c_str());
           return 1;
         }
         dropKnownFactors(cfg, s2);
         if (s2.foundFactor) {
-          anyFactor = true;
-          reportFactors(cfg, s2.factors, pp1B1, pp1Bounds.b2, "P+1", seed);
+          reportFactors(cfg, s2.factors, pp1B1, pp1Bounds.b2, "P+1", &start, 0);
           break;
         }
-        log("  P+1 seed %u: no factor in stage 2 either (B2=%llu)\n",
-            seed, (unsigned long long) pp1Bounds.b2);
+        log("  P+1 start %s: no factor in stage 2 either (B2=%llu)\n",
+            start.label().c_str(), (unsigned long long) pp1Bounds.b2);
       }
-    }
-    if (!anyFactor) {
-      writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? pp1Bounds.b2 : pp1B1, {}, 0);
+      // One result per RUN, like Prime95: each start is an independent
+      // attempt, and a single line covering several of them could not say
+      // which start it described.
+      writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? pp1Bounds.b2 : pp1B1, {}, &start, 0);
     }
     log("\n  appended to %s\n", cfg.resultsFile.c_str());
     if (!cfg.doPM1) {
@@ -800,7 +726,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     dropKnownFactors(cfg, r);
     printf("\n");
     if (r.foundFactor) {
-      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", 0);
+      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0);
       log("  appended to %s\n", cfg.resultsFile.c_str());
     } else {
       log("  M%u: no factor found with B1 = %llu\n",
@@ -812,7 +738,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       // job, so that case is always reported above regardless of runStage2 --
       // and the "appended" line only prints when a write actually happened.
       if (!runStage2) {
-        writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, 0);
+        writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, nullptr, 0);
         log("  appended to %s\n", cfg.resultsFile.c_str());
       }
     }
@@ -864,14 +790,14 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       if (ranStage2) {
         printf("  stage 1's gcd found a factor; the overlapped stage 2 is discarded\n");
       }
-      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", 0);
+      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0);
       log("  appended to %s\n", cfg.resultsFile.c_str());
       return 0;
     }
     log("  M%u: no factor found with B1 = %llu\n",
         cfg.exponent, (unsigned long long) r.b1Used);
     if (!ranStage2) {
-      writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, 0);
+      writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, nullptr, 0);
       log("  appended to %s\n", cfg.resultsFile.c_str());
     }
   }
@@ -884,11 +810,11 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     }
     dropKnownFactors(cfg, s2);
     if (s2.foundFactor) {
-      reportFactors(cfg, s2.factors, b1, bounds.b2, "P-1", 0);
+      reportFactors(cfg, s2.factors, b1, bounds.b2, "P-1", nullptr, shape.d);
     } else {
       log("  M%u: no factor found in stage 2 either (B1=%llu, B2=%llu)\n",
           cfg.exponent, (unsigned long long) b1, (unsigned long long) bounds.b2);
-      writeResultJson(cfg, "P-1", b1, bounds.b2, {}, 0);
+      writeResultJson(cfg, "P-1", b1, bounds.b2, {}, nullptr, shape.d);
     }
     log("  appended to %s\n", cfg.resultsFile.c_str());
   }
@@ -993,9 +919,12 @@ static int runMain(int argc, char** argv) {
     // entry -- otherwise one assignment's override would silently become the
     // setting for every entry after it, which is exactly the class of bug
     // resolveBounds exists to prevent for bounds.
+    // config.txt's bias, so an assignment that supplies its own tests_saved can
+    // override it for that entry alone without the override sticking.
+    const double configuredBias = cfg.bias;
     const bool configuredDoPM1 = cfg.doPM1;
     const bool configuredDoPP1 = cfg.doPP1;
-    const std::vector<u32> configuredPp1Seeds = cfg.pp1Seeds;
+    const std::vector<u32> configuredPp1Runs = cfg.pp1Runs;
 
     // Peek at the next queued exponent WITHOUT consuming it, purely so
     // --bounds and --tune (which read cfg.exponent same as always) have
@@ -1005,9 +934,20 @@ static int runMain(int argc, char** argv) {
       std::vector<WorktodoEntry> peek;
       std::string werr;
       if (loadWorktodo(cfg.worktodoFile, peek, werr) && !peek.empty()) {
-        cfg.exponent = peek.front().exponent;
-        cfg.factoredTo = configuredFactoredTo ? configuredFactoredTo
-                                              : defaultFactoredTo(cfg.exponent);
+        // Apply the SAME per-entry overrides the job loop does, or --bounds
+        // and --tune describe a job nobody is going to run: an assignment
+        // carrying its own bounds, TF depth or tests_saved would be surveyed
+        // at config.txt's values instead of its own. The peek still does not
+        // consume the entry -- it only borrows its settings.
+        const WorktodoEntry& first = peek.front();
+        cfg.exponent = first.exponent;
+        cfg.factoredTo = first.hasFactoredTo    ? first.factoredTo
+                        : configuredFactoredTo ? configuredFactoredTo
+                                               : DEFAULT_FACTORED_TO;
+        const ResolvedBounds prb = resolveBounds(first, configuredB1, configuredB2);
+        cfg.b1 = prb.b1;
+        cfg.b2 = prb.b2;
+        cfg.bias = first.testsSaved > 0 ? first.testsSaved : configuredBias;
       } else if (!werr.empty()) {
         // Say why. This peek used to discard the error, so a malformed line
         // reached --bounds and --tune as the far less useful "needs an
@@ -1033,6 +973,7 @@ static int runMain(int argc, char** argv) {
     if (doSelftest && selftest == "stage2plan") { return runStage2PlanTests(); }
     if (doSelftest && selftest == "bounds") { return runBoundsTests(); }
     if (doSelftest && selftest == "worktodo") { return runWorktodoTests(); }
+    if (doSelftest && selftest == "results") { return runResultsTests(); }
 
     // --bounds: show the surface around the automatic choice, for the job in
     // config.txt. No GPU, so the pairing shape comes from the configured values
@@ -1054,7 +995,8 @@ static int runMain(int argc, char** argv) {
       printf("stage-2 shape D=%u w=%u (%u T-buffers of %.1f MB = %.2f GB)\n",
              s.d, s.w, stage2NumJ(s.d, s.w), double(residueBytes) / (1 << 20),
              double(stage2NumJ(s.d, s.w)) * double(residueBytes) / (1u << 30));
-      printBoundsSurface(cfg.exponent, cfg.factoredTo, cfg.bias, cm);
+      printBoundsSurface(cfg.exponent, cfg.factoredTo, cfg.bias, cm,
+                         cfg.b1, cfg.b2);
       if (cfg.doPP1) {
         // Not a full surface -- just enough to make P+1's own model visible
         // through this diagnostic rather than only at job-run time. B1 and
@@ -1062,18 +1004,18 @@ static int runMain(int argc, char** argv) {
         // w, T-table sizing) is still shared with P-1, a GPU-memory budget
         // decision rather than a cost-model gap.
         const Bounds pp1b = choosePP1Bounds(cfg.exponent, cfg.factoredTo, cfg.bias, cm,
-                                            u32(cfg.pp1Seeds.size()), cfg.b1, cfg.b2);
+                                            u32(cfg.pp1Runs.size()), cfg.b1, cfg.b2);
         if (pp1b.b2 > pp1b.b1) {
           printf("\nP+1 (%u seeds, own B1/B2 model):\n"
                  "  B1=%llu B2=%llu  P(factor)=%.3f%% (%.3f%% + %.3f%%)  work %.1f%% of a PRP test\n",
-                 u32(cfg.pp1Seeds.size()), (unsigned long long) pp1b.b1,
+                 u32(cfg.pp1Runs.size()), (unsigned long long) pp1b.b1,
                  (unsigned long long) pp1b.b2, pp1b.prob() * 100,
                  pp1b.probStage1 * 100, pp1b.probStage2 * 100,
                  (pp1b.workStage1 + pp1b.workStage2) / cfg.exponent * 100);
         } else {
           printf("\nP+1 (%u seeds, own B1/B2 model):\n"
                  "  B1=%llu (no stage 2)  P(factor)=%.3f%%  work %.1f%% of a PRP test\n",
-                 u32(cfg.pp1Seeds.size()), (unsigned long long) pp1b.b1, pp1b.prob() * 100,
+                 u32(cfg.pp1Runs.size()), (unsigned long long) pp1b.b1, pp1b.prob() * 100,
                  pp1b.workStage1 / cfg.exponent * 100);
         }
       }
@@ -1168,6 +1110,7 @@ static int runMain(int argc, char** argv) {
       if (selftest == "all")                          { rc |= runStage2PlanTests(); }
       if (selftest == "all")                          { rc |= runBoundsTests(); }
       if (selftest == "all")                          { rc |= runWorktodoTests(); }
+      if (selftest == "all")                          { rc |= runResultsTests(); }
       if (selftest == "all" || selftest == "engine")  { rc |= runEngineTests(shared, &queue, args.fftSpec, selftest != "all"); }
       if (selftest == "all" || selftest == "pm1")     { rc |= runPM1Tests(shared, &queue, args.fftSpec); }
       if (selftest == "all" || selftest == "extend")  { rc |= runExtendTests(shared, &queue, args.fftSpec); }
@@ -1227,9 +1170,16 @@ static int runMain(int argc, char** argv) {
 
       const WorktodoEntry job = entries.front();
       cfg.exponent = job.exponent;
-      cfg.factoredTo = configuredFactoredTo ? configuredFactoredTo
-                      : job.hasFactoredTo   ? job.factoredTo
-                                            : defaultFactoredTo(cfg.exponent);
+      // The line first, config second, the size-based guess last. factored_to
+      // used to invert the first two, on the reasoning that an explicit value
+      // was a deliberate statement -- but it is ONE number applied to a whole
+      // queue of different exponents, and how_far_factored is per-exponent and
+      // current. It was also the only setting where config beat the assignment,
+      // which made "the worktodo line wins" untrue in exactly one place.
+      // The line first, config second, DEFAULT_FACTORED_TO last.
+      cfg.factoredTo = job.hasFactoredTo     ? job.factoredTo
+                      : configuredFactoredTo ? configuredFactoredTo
+                                             : DEFAULT_FACTORED_TO;
 
       // See Worktodo.h's resolveBounds: a Pminus1= entry's own B1/B2 win
       // whenever present, else config.txt's own value (0 == auto unless the
@@ -1244,19 +1194,17 @@ static int runMain(int argc, char** argv) {
       // from whatever the previous entry left behind.
       cfg.doPM1 = configuredDoPM1;
       cfg.doPP1 = configuredDoPP1;
-      cfg.pp1Seeds = configuredPp1Seeds;
+      cfg.pp1Runs = configuredPp1Runs;
       if (job.method == WorktodoEntry::PM1_ONLY) {
         cfg.doPM1 = true;
         cfg.doPP1 = false;
       } else if (job.method == WorktodoEntry::PP1_ONLY) {
         cfg.doPM1 = false;
         cfg.doPP1 = true;
-        // nth_run picks WHICH independent attempt this is; see Worktodo.h for
-        // why that becomes an index into pp1_seeds rather than Prime95's own
-        // start values. One seed, because the assignment asked for one run.
-        if (job.pp1NthRun && !configuredPp1Seeds.empty()) {
-          cfg.pp1Seeds = {configuredPp1Seeds[(job.pp1NthRun - 1) % configuredPp1Seeds.size()]};
-        }
+        // The assignment names the run, so config.txt's list of runs does not
+        // apply: one line, one run, one result. nth_run means the same thing
+        // here as in Prime95 -- 1 is 2/7, 2 is 6/5, 3+ a random pair.
+        if (job.pp1NthRun) { cfg.pp1Runs = {job.pp1NthRun}; }
       }
 
       const ResolvedBounds rb = resolveBounds(job, configuredB1, configuredB2);
@@ -1265,6 +1213,17 @@ static int runMain(int argc, char** argv) {
       cfg.aid = job.aid;
       cfg.knownFactors = job.knownFactors;
       cfg.testsSaved = job.testsSaved;
+      // The assignment wins. tests_saved and bias are the same coefficient --
+      // "how many primality tests a factor would save", the multiplier on the
+      // cost of coming up empty (Config.h spells out the correspondence with
+      // Prime95's ll_testing_cost). PrimeNet knows whether THIS exponent still
+      // needs two tests or one; config.txt only holds a standing preference, so
+      // where the two disagree the line is the better information.
+      //
+      // tests_saved == 0 is not a low value to honour: Prime95 writes it to mean
+      // "P-1 is already done for this exponent". Treated as absent, so the
+      // configured bias stands rather than a factor being priced at nothing.
+      cfg.bias = job.testsSaved > 0 ? job.testsSaved : configuredBias;
       cfg.b2StartIgnored = job.b2Start != 0;
       cfg.ignoredB2Start = job.b2Start;
 

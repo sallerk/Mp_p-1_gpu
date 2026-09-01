@@ -129,7 +129,8 @@ set SRCS=^
  src\Stage2Plan.cpp ^
  src\Stage2Save.cpp ^
  src\Pp1Stage2Save.cpp ^
- src\Save.cpp
+ src\Save.cpp ^
+ src\Results.cpp
 
 rem  No /Isrc: Windows include lookup is case-insensitive, so putting src\ on the
 rem  include path makes the CRT's <csignal> -> <signal.h> resolve to our own

@@ -91,11 +91,53 @@ std::vector<FoundFactor> splitFactors(const Nat& g, u32 exponent, u64 maxK = 200
 // B1-smooth; when it IS a residue the computation degenerates into a P-1 run
 // with base related to the seed. Which case applies is ~50/50 and cannot be
 // known in advance, so several seeds are tried.
+// P+1's starting point, as the rational num/den Prime95 uses rather than a
+// bare integer. The Lucas sequence starts at V_1 = num/den mod M_p, which is
+// just num * den^-1 -- see ratioModMersenne in BigInt.h.
+//
+// Peter Montgomery's choices, and Prime95's (ecm.cpp, "Convert run number
+// into starting point"):
+//
+//   run 1   2/7     finds every factor q with q+1 divisible by 6
+//   run 2   6/5     finds every factor q with q+1 divisible by 4
+//   run 3   random  no special structure; q+1 divisible by 2 only
+//
+// which is why 2/7 is worth running before 6/5, and both before any random
+// pair. An integer seed s -- what this program used before 1.9.4 -- is the
+// degenerate case s/1, with none of that structure.
+struct Pp1Start {
+  u32 num = 2;
+  u32 den = 7;
+
+  // A single u32 identifying this start, for the save records, which have
+  // always carried one u32 of "which computation is this". num <= 199 and
+  // den <= 71, so the pair packs without collision and the save FORMAT is
+  // unchanged -- only the value it holds.
+  u32 id() const { return num * 256 + den; }
+
+  // "2/7", exactly as it appears in results.txt.
+  std::string label() const { return std::to_string(num) + "/" + std::to_string(den); }
+
+  // The denominators Prime95 draws from for run 3 and above.
+  static const u32 SMALL_PRIMES[16];
+
+  // Prime95's table. For run 3 (and, in Prime95, anything above it) the
+  // numerator and denominator are drawn with
+  // rand(), having called srand(time(NULL)) -- so its start differs run to
+  // run, and it has to write the pair into its save file and read it back to
+  // resume (ecm.cpp's "Replace random start with random start from save
+  // file"). Deriving the pair from (exponent, nthRun) instead gives the same
+  // ranges and the same absence of structure, while making a run reproducible
+  // and needing no save-format change at all: a resumed run recomputes the
+  // start it was already using.
+  static Pp1Start forRun(u32 nthRun, u32 exponent);
+};
+
 struct PP1Result {
   bool foundFactor = false;
   Nat gcdValue;
   std::vector<FoundFactor> factors;
-  u32 seedUsed = 0;
+  Pp1Start startUsed;
   bool interrupted = false;
   u64 b1Used = 0;
   double stage1Secs = 0;
@@ -104,7 +146,7 @@ struct PP1Result {
   Words residue;            // V_E(seed,1) itself, as stage 2 needs it on the GPU
 };
 
-PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
+PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, Pp1Start start,
                        bool showProgress);
 
 // P+1 stage 2, run on the V_E residue stage 1 left behind. See Gpu.h
@@ -132,7 +174,7 @@ struct PP1Stage2Result {
 };
 
 PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
-                             u32 seed, u64 b1, u64 b2, u32 d, u32 w,
+                             Pp1Start start, u64 b1, u64 b2, u32 d, u32 w,
                              bool showProgress);
 
 // R such that E(b1To) == E(b1From) * R -- the extra work an extension needs.

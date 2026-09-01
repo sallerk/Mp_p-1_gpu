@@ -121,16 +121,16 @@ touch:
 | key | meaning |
 |---|---|
 | `worktodo_file` | the exponent queue, one per line — `worktodo.txt` by default |
-| `factored_to` | trial-factoring depth already done, in bits |
+| `factored_to` | trial-factoring depth already done, in bits. `auto` (default) is a flat 75; it cannot be 0, which the bounds model would read as "never trial factored" |
 | `b1`, `b2` | `auto`, or explicit bounds |
 | `stages` | `auto`, `both`, or `1` for stage 1 only |
 | `method` | `pm1` (default), `pp1`, or `both` |
-| `pp1_seeds` | comma-separated bases to try for P+1, default `3, 5, 7` |
-| `bias` | what a factor is worth to you, in units of one PRP test |
+| `pp1_runs` | comma-separated P+1 run numbers, default `1,2,3`. Only 1, 2 and 3 exist: start `2/7`, `6/5`, and a random pair. A `Pplus1=` line's `nth_run` is capped the same way |
+| `bias` | what a factor is worth to you, in units of one PRP test. The same coefficient as PrimeNet's `tests_saved`; **a `Pfactor=` line's own `tests_saved` overrides this** for that entry (0 means "P-1 already done" and is treated as absent). The default 2.0 matches a first-time test, 1.0 a double-check |
 | `bounds_tolerance` | how much extra work to accept for a better chance |
 | `gcd_threads` | CPU threads for the gcd phase — no longer consulted by the default gcd (GMP's `mpz_gcd`, single-threaded, since 1.8); still respected by this program's own `gcdHalf` implementation, kept as the reversion path |
-| `username`, `computer_name` | written into results for PrimeNet |
-| `wait_for_work` | `no` (default) exits on an empty queue; `yes` waits and rechecks it — for running alongside AutoPrimeNet |
+| `user`, `computer` | written into `results.txt` as `"user"`/`"computer"`, the same fields Prime95 writes, so a manual upload is credited correctly. `username`/`computer_name` are accepted as aliases. Omitted from the line when unset |
+| `wait_for_work` | `yes` (default) waits and rechecks an empty queue, so AutoPrimeNet can refill it; `no` exits instead |
 | `wait_poll_seconds` | how often to recheck, when `wait_for_work = yes` — default 5 |
 
 ## worktodo.txt — the exponent queue
@@ -138,10 +138,11 @@ touch:
 As of 1.4, exponents no longer live in `config.txt` — they live in
 `worktodo.txt` (or whatever `worktodo_file` points at), one per line,
 processed top to bottom. `#` starts a comment, blank lines are ignored, same
-as `config.txt`. A bare exponent is this program's own shorthand: every such
-entry runs under `config.txt`'s settings — `method`, `b1`/`b2`, `bias`,
-`stages`, and everything else — only the exponent (and, for `factored_to =
-auto`, its default) varies per entry.
+as `config.txt`. A bare exponent is this program's own shorthand: such an
+entry runs entirely under `config.txt`'s settings — `method`, `b1`/`b2`,
+`bias`, `factored_to`, `stages` and the rest — with only the exponent coming
+from the queue. An assignment line supplies some of those itself, and what it
+supplies wins; see the sections below.
 
 **The assignment keyword picks the method.** A `Pminus1=` line runs P-1 and
 only P-1; a `Pplus1=` line runs P+1 and only P+1 — whatever `method` says in
@@ -157,12 +158,30 @@ asked for, and a `"worktype":"P+1"` line written to `results.txt` for a P-1
 assignment.
 
 `Pplus1=k,b,n,c,B1,B2,nth_run[,how_far_factored][,"known_factors"]` follows
-Prime95's shape, with `nth_run` required. Prime95 uses `nth_run` to choose a
-starting value (1 → 2/7, 2 → 6/5, 3+ → random); this program's P+1 is
-parameterised by an integer seed instead (`pp1_seeds`, default `3,5,7`), so
-there is no faithful translation. It is read as a 1-based index into
-`pp1_seeds` — preserving what `nth_run` is *for*, independent attempts at the
-same exponent, without claiming to reproduce Prime95's own start values.
+Prime95's shape, with `nth_run` required. `nth_run` selects the **starting
+point**, exactly as it does in Prime95:
+
+| `nth_run` | start | catches |
+|---|---|---|
+| 1 | `2/7` | every factor `q` whose `q+1` is divisible by 6 |
+| 2 | `6/5` | every factor `q` whose `q+1` is divisible by 4 |
+| 3 | random, numerator 72–199 over a small prime | no special structure |
+
+Those are Peter Montgomery's choices, which is why 1 is worth running before
+2, and both before any random start. The starting point is a *rational*:
+P+1's Lucas sequence begins at `V_1 = num/den mod M_p`. Before 1.9.4 this
+program used plain integer seeds (`3, 5, 7`), which have none of that
+structure — `2/7` is not a better label for the same work, it is better work.
+
+Prime95 accepts `nth_run` above 3, each drawing another random pair; this
+program refuses them. Its random start is *derived* from `(exponent, run)` so
+that a resumed run recomputes it, which also means run 4 would be no more
+independent of run 3 than a second roll of a fixed die.
+
+For a random start the pair is derived from the exponent and the run number
+rather than drawn from a clock, so a resumed run recomputes the start it was
+already using. Prime95 draws it with `rand()` and has to store the pair in its
+save file to survive a restart.
 
 A line can also be a `Pfactor=`, `Pminus1=` or `Pplus1=` assignment — the shape
 [AutoPrimeNet](https://github.com/tdulcet/AutoPrimeNet) (the maintained
@@ -182,13 +201,62 @@ Pminus1=1,2,86243,-1,50000,3000000
 That B1/B2 is used as-is whenever present. A `Pfactor=` line or a bare
 exponent has none to honor, and falls back to `config.txt`'s own `b1`/`b2`
 (auto by default) exactly as before. Either way, the entry's exponent,
-trial-factoring depth (`Pfactor=`'s `how_far_factored` or `Pminus1=`'s
-`sieve_depth`, when present — it wins over `factored_to = auto`'s built-in
-default, though an *explicit* `factored_to = N` in config.txt still wins
-over that), assignment ID, and known factors are always taken from the line.
+trial-factoring depth (`Pfactor=`'s `how_far_factored` or `Pminus1=`/
+`Pplus1=`'s `sieve_depth`, when present — it wins over `factored_to` in
+config.txt, explicit or not, because it is per-exponent where the config
+value is one number for the whole queue), assignment ID, and known factors
+are always taken from the line.
 An assignment ID and known factors, when present, are echoed back into
 `results.txt` (see **Results**, below) so AutoPrimeNet's own upload step
 sees what it expects.
+
+The full field layout of each shape, optional parts in brackets:
+
+```
+[aid,]1,2,<exponent>,-1,<how_far_factored>,<tests_saved>[,"<known_factors>"]
+[aid,]1,2,<exponent>,-1,<B1>,<B2>[,<sieve_depth>[,<B2_start>[,"<known_factors>"]]]
+[aid,]1,2,<exponent>,-1,<B1>,<B2>,<nth_run>[,<how_far_factored>[,"<known_factors>"]]
+```
+
+for `Pfactor=`, `Pminus1=` and `Pplus1=` respectively. **The assignment ID
+comes first, before `k`** — 32 hex characters followed by a comma, which is
+how it is told apart from `k`:
+
+```
+Pminus1=88D8BAFFFF12E5DDD3FB093FEFE04025,1,2,4444091,-1,1000000,30000000
+```
+
+It is optional on every shape, and echoed back into `results.txt` as `"aid"`
+(see **Results**, below) so AutoPrimeNet's upload step can match the result to
+the assignment that produced it.
+
+### B2 = 0: stage 1 alone
+
+Set `B2` to 0, or to anything at or below `B1`, and stage 1 runs alone:
+
+```
+Pminus1=1,2,4444091,-1,1000000,0          B2 = 0
+Pminus1=1,2,4444091,-1,1000000,1000000    B2 = B1
+Pminus1=1,2,4444091,-1,1000000,500000     B2 below B1
+```
+
+The `B2` field itself is **not** optional, exactly as in Prime95: its reader
+does `if ((q = strchr (q+1, ',')) == NULL) goto illegal_line;` before reading
+B2, so a line that stops after B1 is not a Prime95 line, and is refused here
+too. Write `,0`.
+
+Clamping is Prime95's own idiom: it raises `C` to `B` and then gates every
+stage-2 field on `C > B`, so `B2 <= B1` has always meant "no stage 2" there.
+
+**Such a line overrides `config.txt` completely** — its B1 wins over `b1`, and
+stage 1 runs alone whatever `stages` says, including `stages = both`. The
+result carries no `b2` and no `d`, which is exactly how Prime95 spells a
+stage-1-only result. Stage 2's B1 floor of 105 does not apply, since no stage 2
+follows: `Pminus1=1,2,4444091,-1,10,0` is a small job rather than an
+impossible one.
+
+`Pplus1=` cannot drop the field, because `nth_run` sits after it positionally —
+write `B2 = 0` there instead.
 
 Two fields on that line are checked rather than taken on trust, because both
 end up in `results.txt` as claims about M_p:
@@ -233,7 +301,11 @@ needed. What "finished" means, and what happens otherwise:
 
 `--bounds` and `--tune` read the queue's first entry (without consuming it)
 to know which exponent to scope themselves to, the same role `config.txt`'s
-`exponent` key used to play.
+`exponent` key used to play. They apply that entry's own settings too — its
+bounds, trial-factoring depth and `tests_saved` — so what they report is the
+job that would actually run, not the same exponent under `config.txt`'s
+values. With `b1`/`b2` pinned, `--bounds` says so and skips the tolerance
+sweep, which cannot mean anything when there is only one candidate.
 
 ## Command line
 
@@ -404,19 +476,69 @@ P+1 -- they all share the same `gcdWithProgress` reporting.
 [mersenne.org](https://www.mersenne.org/manual_result/) accepts:
 
 ```json
-{"status":"F","exponent":81679223,"worktype":"P-1","b1":2000000,"b2":60000000,
- "factors":["..."],"program":{"name":"Mp_p-1_gpu","version":"1.8"},
- "timestamp":"2026-07-28 17:29:54","user":"...","computer":"...",
- "aid":"...","known-factors":["..."]}
+{"status":"F", "exponent":81679223, "worktype":"P-1", "factors":["..."],
+ "b1":2000000, "b2":60000000, "fft-length":5242880,
+ "program":{"name":"Mp_p-1_gpu", "version":"1.9.4"},
+ "timestamp":"2026-07-28 17:29:54", "user":"...", "computer":"...",
+ "aid":"...", "known-factors":["..."]}
 ```
+
+and a P+1 line, which carries `start` as well:
+
+```json
+{"status":"NF", "exponent":185640139, "worktype":"P+1", "b1":2400000,
+ "b2":450000000, "start":"2/7", "fft-length":10485760,
+ "program":{"name":"Mp_p-1_gpu", "version":"1.9.4"},
+ "timestamp":"2026-06-28 18:28:29", "user":"...", "computer":"..."}
+```
+
+A P-1 line whose stage 2 ran also carries `d`, the pairing modulus stage 2
+walked:
+
+```json
+{"status":"NF", "exponent":461051111, "worktype":"P-1", "b1":3184000,
+ "b2":1798492410, "d":4290, "fft-length":26214400,
+ "program":{"name":"Mp_p-1_gpu", "version":"1.9.4"},
+ "timestamp":"2025-02-27 22:29:00", "user":"...", "computer":"...",
+ "aid":"..."}
+```
+
+`b2` and `d` appear together, on the same rule Prime95 uses: for a no-factor
+result whenever B2 > B1, and for a factor only when **stage 2 is what found
+it**. A factor found by stage 1 reports `b1` alone, even if a stage 2 was
+configured — Prime95 does the same, and it is the honest report, since no
+stage-2 gcd ran to cover (B1, B2]. In this program stage 2 may in fact have
+run: it is overlapped with the stage-1 gcd and discarded if that gcd wins the
+race. Discarded work is not coverage.
+
+Prime95 also writes `poly1-size`, `poly2-size` and `stage2-fft-length` on such
+a line. This program writes **none of the three**: all three sit inside its
+`stage2_type == PM1_STAGE2_POLYMULT` branch and describe the polynomial
+multiplication its stage 2 uses from 30.8 on. This program pairs primes in
+Montgomery's scheme, so there are no polynomials to size, and reporting the FFT
+length under a key Prime95 uses only for polymult would imply an algorithm that
+never ran. Prime95 emits none of these for P+1 either, and neither does this.
 
 `status` is `F` (factor), `NF` (no factor), or `C` (a divisor that could not be
 split into primes — recorded for you, not submittable). One line per job, with
-both bounds when stage 2 ran. `aid` and `known-factors` appear only when the
+both bounds when stage 2 ran. `known-factors` sits between `timestamp` and
+`user`, and `aid` last of all, following Prime95. Both appear only when the
 job came from a `Pfactor=`/`Pminus1=` worktodo entry that carried them (see
 **worktodo.txt**, above) — present or absent the same way `user`/`computer`
 already are, and using the same JSON keys Prime95's own submission does, so
 AutoPrimeNet's upload step can match the line back to its assignment.
+
+`fft-length` is the transform size the job actually ran at. `start` appears on
+P+1 lines only, as the `num/den` the Lucas sequence began from (see **P+1**,
+below); P-1 has no equivalent and Prime95 emits none for it either. `user` and
+`computer` come from `config.txt` and are omitted when unset.
+
+The field order and spacing match Prime95's own `results.txt` so the two can be
+read side by side. Three fields Prime95 writes are deliberately **not** emitted:
+`security-code` is its SEC5 checksum over its own internal state, and a value
+computed here would not be one — PrimeNet treats it as optional, and a
+fabricated one would be worse than none. `build` and `port` describe a Prime95
+installation.
 
 Its `timestamp` is **UTC**, deliberately — it is the field mersenne.org
 actually wants. The console and `Mp_p-1_gpu.log` timestamps are your machine's
@@ -476,7 +598,7 @@ adapted.
 `method = pp1` (or `both`, to try P+1 then fall through to P-1) runs P+1
 instead of, or alongside, P-1. P+1 finds a factor q of `M_p` when `q+1` is
 B1-smooth — a different target from P-1's `q-1`, so it catches factors P-1
-cannot, and vice versa, for the seeds tried (`pp1_seeds`, default `3, 5, 7`).
+cannot, and vice versa, for the runs tried (`pp1_runs`, default `1,2,3`).
 
 P+1 has its own B1 and B2 model (`pp1Prob`/`choosePP1Bounds` in
 `src/Bounds.cpp`) — both used to silently borrow P-1's own choice, which
@@ -634,10 +756,20 @@ Four things this table is not:
 Mp_p-1_gpu.exe --selftest
 ```
 
-`gcd`, `exponent`, `stage2plan`, `bounds` and `worktodo` need no GPU. `engine`,
+`gcd`, `exponent`, `stage2plan`, `bounds`, `worktodo` and `results` need no
+GPU. `engine`,
 `pm1`, `pp1`, `extend`, `stage2`, `b2extend` and `pp1stage2` exercise the GPU
 against exact CPU arithmetic and against known factors of real Mersenne
 numbers.
+
+`--selftest=results` is worth singling out. It checks the exact field set and
+field **order** of every line `results.txt` can hold, against Prime95's, and
+asserts that `security-code`, `poly1-size`, `poly2-size`, `stage2-fft-length`,
+`build`, `port` and `seed` never appear. That list is not hypothetical: the
+output wrote `seed` where Prime95 writes `start`, and a later draft wrote
+`stage2-fft-length`, which Prime95 emits only for a polymult stage 2. Both
+were caught by reading Prime95's source rather than by running anything,
+which is why the check exists.
 
 ## Scope and limitations
 
@@ -680,7 +812,7 @@ numbers.
 - **P+1 is a secondary mode.** Its yield per unit work is well below P-1's, so
   P-1 is the default; run it in earnest only once P-1 has been tried.
 - **`method = both` does not stop early across methods.** Finding a factor in
-  P+1 skips that method's own remaining seeds and its stage 2 (a factor
+  P+1 skips that method's own remaining runs and its stage 2 (a factor
   already in hand makes more searching wasted work) — but P-1 still runs
   afterward regardless, at full cost. The equivalent "stop, we're done"
   check exists *within* each method, not *between* them yet.

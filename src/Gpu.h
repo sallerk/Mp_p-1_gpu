@@ -407,6 +407,16 @@ public:
                u64 resumeBit = 0, u32 saveEvery = 0,
                const std::function<void(const Words&, const Words&, u64)>& save = {});
 
+  // The same ladder with V_1 a full residue rather than a small integer --
+  // P+1 started from Prime95's rational 2/7 or 6/5 (see Pp1Start in PM1.h).
+  // Costs one extra kernel per bit: a full-residue subtract leaves the result
+  // uncarried, so it must be renormalised before a later bit squares it.
+  Words lucasVBase(const Words& base, const vector<u64>& expLimbs, u32 reportEvery,
+                   const std::function<bool(u64, u64)>& progress,
+                   const Words* resumeA = nullptr, const Words* resumeB = nullptr,
+                   u64 resumeBit = 0, u32 saveEvery = 0,
+                   const std::function<void(const Words&, const Words&, u64)>& save = {});
+
   // base^exp mod (2^E - 1) for an arbitrary base -- used to extend a completed
   // stage 1 to a larger B1 without redoing it. Same resume/checkpoint contract
   // as powBase3.
@@ -514,6 +524,16 @@ public:
   // buildStage2Plan's own invariant (w*d/2 <= b1) forces mFirst >= 1, making
   // (mFirst-1)*D == 0 the common case at realistic bounds, not a corner one.
   Words lucasVResidue(const Words& base, u64 n);
+
+  // Shared body of lucasV and lucasVBase. base == nullptr selects the
+  // small-integer path (kSubSmall, three buffers); otherwise V_1 is *base
+  // (kSubWords + renormalize, five buffers).
+  Words lucasLadder(const Words* base, u32 seed,
+                    const vector<u64>& expLimbs, u32 reportEvery,
+                    const std::function<bool(u64, u64)>& progress,
+                    const Words* resumeA, const Words* resumeB, u64 resumeBit,
+                    u32 saveEvery,
+                    const std::function<void(const Words&, const Words&, u64)>& save);
 
   // P+1 stage 2. `y1` is the completed stage-1 residue V_E(seed,1). Finds a
   // factor q of M_p whenever q+1 is B1-smooth apart from a single prime in

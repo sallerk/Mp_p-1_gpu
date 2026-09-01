@@ -519,11 +519,27 @@ void finishStage1Gcd(PM1Result& res, u32 exponent, bool showProgress, bool annou
 // ---------------------------------------------------------------------------
 // P+1 stage 1
 // ---------------------------------------------------------------------------
-PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
+const u32 Pp1Start::SMALL_PRIMES[16] =
+    {11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71};
+
+Pp1Start Pp1Start::forRun(u32 nthRun, u32 exponent) {
+  if (nthRun <= 1) { return {2, 7}; }
+  if (nthRun == 2) { return {6, 5}; }
+  // splitmix64 on (exponent, nthRun). Any decent mixer would do; what matters
+  // is that it is FIXED, so the same assignment resumes with the same start.
+  u64 h = (u64(exponent) << 32) ^ (u64(nthRun) * 0x9E3779B97F4A7C15ull);
+  h ^= h >> 30; h *= 0xBF58476D1CE4E5B9ull;
+  h ^= h >> 27; h *= 0x94D049BB133111EBull;
+  h ^= h >> 31;
+  // Prime95: numerator = 72 + (rand() & 0x7F), denominator = table[rand() & 0xF].
+  return {u32(72 + (h & 0x7F)), SMALL_PRIMES[(h >> 8) & 0xF]};
+}
+
+PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, Pp1Start start,
                        bool showProgress) {
   PP1Result res;
   res.b1Used = b1;
-  res.seedUsed = seed;
+  res.startUsed = start;
 
   printf("  [%s exponent CPU] building E for B1 = %llu ... ", ph(1), (unsigned long long) b1);
   fflush(stdout);
@@ -542,16 +558,16 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
       const double rate = (thisRun > 0 && el > 0) ? thisRun / el : 0;
       const double eta = rate > 0 ? (total - done) / rate : 0;
       if (stdoutIsTerminal()) {
-        printf("\r  [%s P+1 seed %u GPU] %6.2f%%  %llu/%llu steps (%.0f/s)"
+        printf("\r  [%s P+1 start %s GPU] %6.2f%%  %llu/%llu steps (%.0f/s)"
                "  elapsed %s  ETA %s   ",
-               ph(2), seed, 100.0 * double(done) / double(total),
+               ph(2), start.label().c_str(), 100.0 * double(done) / double(total),
                (unsigned long long) done, (unsigned long long) total,
                rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
       } else if (el - lastAt >= 60.0 || done == total) {
         lastAt = el;
-        printf("  [%s P+1 seed %u GPU] %6.2f%%  %llu/%llu steps (%.0f/s)"
+        printf("  [%s P+1 start %s GPU] %6.2f%%  %llu/%llu steps (%.0f/s)"
                "  elapsed %s  ETA %s\n",
-               ph(2), seed, 100.0 * double(done) / double(total),
+               ph(2), start.label().c_str(), 100.0 * double(done) / double(total),
                (unsigned long long) done, (unsigned long long) total,
                rate, fmtDuration(el).c_str(), fmtDuration(eta).c_str());
       }
@@ -560,11 +576,14 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
     return !gInterrupted.load();
   };
 
-  // Checkpoint under a seed-specific name: different seeds are different
-  // computations and their residues are not interchangeable.
+  // Checkpoint under a start-specific name: different starting points are
+  // different computations and their residues are not interchangeable. The
+  // name changed shape in 1.9.4 (it was _s<seed>), so a P+1 run in flight
+  // under an integer seed will not resume -- there is no start it could
+  // resume AS, integer seeds no longer being used.
   char pathBuf[160];
-  snprintf(pathBuf, sizeof(pathBuf), "pp1_%u_b1_%llu_s%u.save",
-           cfg.exponent, (unsigned long long) b1, seed);
+  snprintf(pathBuf, sizeof(pathBuf), "pp1_%u_b1_%llu_n%ud%u.save",
+           cfg.exponent, (unsigned long long) b1, start.num, start.den);
   const string savePath = pathBuf;
 
   SaveState want;
@@ -572,7 +591,7 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
   want.b1 = b1;
   want.eBits = E.bits();
   want.base = 3;                 // unused by P+1, but must match on reload
-  want.seed = seed;
+  want.seed = start.id();
   want.eVersion = E_FORMAT_VERSION;
 
   SaveState loaded;
@@ -585,17 +604,19 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
     if (loadState(savePath, want, loaded, err)) {
       if (loaded.complete) {
         alreadyComplete = true;
-        printf("  [%s P+1 seed %u GPU] already complete -- skipping to the gcd\n", ph(2), seed);
+        printf("  [%s P+1 start %s GPU] already complete -- skipping to the gcd\n",
+               ph(2), start.label().c_str());
       } else if (!loaded.residue2.empty()) {
         rA = &loaded.residue;
         rB = &loaded.residue2;
         resumeBit = loaded.nextBit;
         doneAtStart = (E.bits() - 1) - resumeBit;
-        printf("  [%s P+1 seed %u GPU] resuming at %.2f%%\n", ph(2), seed,
+        printf("  [%s P+1 start %s GPU] resuming at %.2f%%\n", ph(2), start.label().c_str(),
                100.0 * double(doneAtStart) / double(E.bits() - 1));
       }
     } else if (err != "no checkpoint") {
-      printf("  [%s P+1 seed %u GPU] ignoring checkpoint: %s\n", ph(2), seed, err.c_str());
+      printf("  [%s P+1 start %s GPU] ignoring checkpoint: %s\n",
+             ph(2), start.label().c_str(), err.c_str());
     }
   }
 
@@ -618,8 +639,12 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
   if (alreadyComplete) {
     v = loaded.residue;
   } else {
-    v = gpu.lucasV(seed, E.toVector(), cfg.reportEvery, progress, rA, rB, resumeBit,
-                   saveEverySteps, saveFn);
+    // V_1 = num/den mod M_p. A rational start, per Prime95 -- see Pp1Start.
+    // Cheap: ratioModMersenne avoids an extended GCD over p bits.
+    const Words v1 = toWords(ratioModMersenne(start.num, start.den, cfg.exponent),
+                             cfg.exponent);
+    v = gpu.lucasVBase(v1, E.toVector(), cfg.reportEvery, progress, rA, rB, resumeBit,
+                       saveEverySteps, saveFn);
     res.squarings = E.bits() ? E.bits() - 1 : 0;
   }
   res.stage1Secs = stage1.at();
@@ -628,7 +653,7 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
 
   if (gInterrupted.load()) { res.interrupted = true; return res; }
 
-  printf("  [%s P+1 seed %u GPU] done in %s (%.0f us/step)\n", ph(2), seed,
+  printf("  [%s P+1 start %s GPU] done in %s (%.0f us/step)\n", ph(2), start.label().c_str(),
          fmtDuration(res.stage1Secs).c_str(),
          res.squarings ? res.stage1Secs * 1e6 / double(res.squarings) : 0.0);
 
@@ -657,7 +682,7 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
 
   if (vm2.isZero()) {
     // V == 2 exactly: the sequence collapsed, so the gcd would be M_p itself.
-    printf("  [%s gcd CPU] V == 2, nothing to extract for this seed\n", ph(3));
+    printf("  [%s gcd CPU] V == 2, nothing to extract for this start\n", ph(3));
     return res;
   }
 
@@ -682,7 +707,7 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
 // ---------------------------------------------------------------------------
 // P+1 stage 2
 //
-// Continues from the stage-1 residue y1 = V_E(seed,1). See Gpu.h
+// Continues from the stage-1 residue y1 = V_E(V_1,1). See Gpu.h
 // (Gpu::pp1Stage2) for the pairing derivation; this is the driver around it --
 // resume, checkpoint, progress, gcd, factor splitting -- structured like
 // runPM1Stage2 but simpler: no B2-extension search (out of scope for this
@@ -692,21 +717,21 @@ PP1Result runPP1Stage1(Gpu& gpu, const Config& cfg, u64 b1, u32 seed,
 // would just be a large unused file.
 // ---------------------------------------------------------------------------
 PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
-                             u32 seed, u64 b1, u64 b2, u32 d, u32 w,
+                             Pp1Start start, u64 b1, u64 b2, u32 d, u32 w,
                              bool showProgress) {
   PP1Stage2Result res;
   res.b1 = b1;
   res.b2 = b2;
   res.d = d;
   res.w = w;
-  res.seed = seed;
+  res.seed = start.id();
 
   // Binds every accumulator this run reads or writes to the stage-1 residue
   // it belongs to -- P+1's analogue of P-1's xRes64.
   const u64 yRes64 = residue(y1);
 
   const string savePath = cfg.checkpointFile.empty()
-      ? defaultPp1Stage2Path(cfg.exponent, b1, b2, seed)
+      ? defaultPp1Stage2Path(cfg.exponent, b1, b2, start.id())
       : cfg.checkpointFile + ".pp1s2";
 
   Pp1Stage2State want;
@@ -715,7 +740,7 @@ PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
   want.b2 = b2;
   want.d = d;
   want.w = w;
-  want.seed = seed;
+  want.seed = start.id();
   want.yRes64 = yRes64;
 
   // ---- already complete? --------------------------------------------------

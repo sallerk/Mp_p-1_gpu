@@ -1372,22 +1372,32 @@ Words Gpu::powBase3(const vector<u64>& expLimbs, u32 reportEvery,
 }
 
 // P+1 stage 1: V_exp(seed, 1) mod (2^E - 1). See Gpu.h for the recurrences.
-Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
-                  const std::function<bool(u64, u64)>& progress,
-                  const Words* resumeA, const Words* resumeB, u64 resumeBit,
-                  u32 saveEvery,
-                  const std::function<void(const Words&, const Words&, u64)>& save) {
+Words Gpu::lucasLadder(const Words* base, u32 seed,
+                       const vector<u64>& expLimbs, u32 reportEvery,
+                       const std::function<bool(u64, u64)>& progress,
+                       const Words* resumeA, const Words* resumeB, u64 resumeBit,
+                       u32 saveEvery,
+                       const std::function<void(const Words&, const Words&, u64)>& save) {
   size_t nBits = 0;
   for (size_t i = expLimbs.size(); i-- > 0; ) {
     if (expLimbs[i]) { nBits = i * 64 + std::bit_width(expLimbs[i]); break; }
   }
   assert(nBits > 0);
-  assert(seed >= 3);          // V_n(2,1) == 2 for every n: degenerate
+  assert(base || seed >= 3);  // V_n(2,1) == 2 for every n: degenerate
 
-  auto bufs = makeBufVector(3);
+  // Two extra buffers on the residue path: kSubWords needs the base resident
+  // on the device, and renormalize needs a 1. Not allocated for the
+  // small-seed path, where a residue is tens of MB at production exponents.
+  auto bufs = makeBufVector(base ? 5 : 3);
   Buffer<Word>& A = bufs[0];      // V_k
   Buffer<Word>& B = bufs[1];      // V_{k+1}
   Buffer<Word>& T = bufs[2];
+  Buffer<Word>* one     = base ? &bufs[3] : nullptr;
+  Buffer<Word>* baseBuf = base ? &bufs[4] : nullptr;
+  if (base) {
+    writeIn(*one, makeWords(E, 1));
+    writeIn(*baseBuf, *base);
+  }
 
   // See powBase3's identical resume comment: resumeBit's bit is already
   // folded into resumeA/resumeB, so the loop restarts one bit below it, not
@@ -1399,9 +1409,14 @@ Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
     startBit = size_t(resumeBit);
   } else {
     // The leading bit of exp is consumed by starting at k = 1:
-    //   A = V_1 = seed,  B = V_2 = seed^2 - 2.
-    writeIn(A, makeWords(E, seed));
-    writeIn(B, makeWords(E, seed));
+    //   A = V_1 = V1,  B = V_2 = V1^2 - 2.
+    if (base) {
+      A << *baseBuf;
+      B << *baseBuf;
+    } else {
+      writeIn(A, makeWords(E, seed));
+      writeIn(B, makeWords(E, seed));
+    }
     squareLL(B, LEAD_NONE, LEAD_NONE);          // B = seed^2 - 2
     startBit = nBits - 1;
   }
@@ -1412,10 +1427,19 @@ Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
   for (size_t bi = startBit; bi-- > 0; ) {
     const bool bit = (expLimbs[bi / 64] >> (bi % 64)) & 1;
 
-    // V_{2k+1} = A*B - seed, formed BEFORE either input is overwritten.
+    // V_{2k+1} = A*B - V_1, formed BEFORE either input is overwritten.
     T << A;
     modMul(T, B);
-    kSubSmall(T, seed);
+    if (base) {
+      // A full-residue subtract leaves the result uncarried, so it has to be
+      // renormalised before a later bit can square it -- the same precaution
+      // lucasVResidue documents. The small-seed path folds its subtraction
+      // into the carry and needs neither kernel.
+      kSubWords(T, T, *baseBuf);
+      renormalize(T, *one);
+    } else {
+      kSubSmall(T, seed);
+    }
 
     if (bit) {
       squareLL(B, LEAD_NONE, LEAD_NONE);        // B = V_{2k+2} = B^2 - 2
@@ -1445,6 +1469,26 @@ Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
   queue->finish();
   progress(done, total);
   return readAndCompress(A);
+}
+
+// The two public entry points. Both are the same Montgomery ladder; they
+// differ only in what V_1 is and therefore in how "- V_1" is subtracted.
+Words Gpu::lucasV(u32 seed, const vector<u64>& expLimbs, u32 reportEvery,
+                  const std::function<bool(u64, u64)>& progress,
+                  const Words* resumeA, const Words* resumeB, u64 resumeBit,
+                  u32 saveEvery,
+                  const std::function<void(const Words&, const Words&, u64)>& save) {
+  return lucasLadder(nullptr, seed, expLimbs, reportEvery, progress,
+                     resumeA, resumeB, resumeBit, saveEvery, save);
+}
+
+Words Gpu::lucasVBase(const Words& base, const vector<u64>& expLimbs, u32 reportEvery,
+                      const std::function<bool(u64, u64)>& progress,
+                      const Words* resumeA, const Words* resumeB, u64 resumeBit,
+                      u32 saveEvery,
+                      const std::function<void(const Words&, const Words&, u64)>& save) {
+  return lucasLadder(&base, 0, expLimbs, reportEvery, progress,
+                     resumeA, resumeB, resumeBit, saveEvery, save);
 }
 
 // base^R mod (2^E - 1), for an arbitrary base and a bignum exponent.

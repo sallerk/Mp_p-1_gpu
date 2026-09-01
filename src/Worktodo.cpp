@@ -259,13 +259,29 @@ bool parsePfactor(string value, u32 lineNo, WorktodoEntry& out, string& err) {
     err = "worktodo.txt line " + to_string(lineNo) + ": malformed how_far_factored/tests_saved";
     return false;
   }
-  if (howFar < 1 || howFar > 127) {
+  // Positive form, so NaN is refused rather than compared away: "howFar < 1"
+  // and "howFar > 127" are BOTH false for NaN, which let it through to
+  // u32(floor(NaN)) and a trial-factoring depth of nothing in particular.
+  // 1.9.1 rewrote the exponent and B1/B2 tests this way and missed this one;
+  // the acceptance matrix found it.
+  if (!(howFar >= 1 && howFar <= 127)) {
     err = "worktodo.txt line " + to_string(lineNo)
         + ": how_far_factored " + f[4] + " must be 1..127 bits";
     return false;
   }
   out.hasFactoredTo = true;
   out.factoredTo = u32(floor(howFar));
+  // Validated only since it began driving the bounds: tests_saved is the same
+  // coefficient as config.txt's `bias` (see Config.h), so an unchecked value
+  // here would be an unchecked multiplier on the cost of a failed run.
+  // Positive-form test, so NaN is refused rather than compared away. Prime95
+  // clamps at 100 rather than refusing; this program refuses, as it does for
+  // every other out-of-range field on the line.
+  if (!(testsSaved >= 0 && testsSaved <= 100)) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": tests_saved " + f[5]
+        + " must be 0..100";
+    return false;
+  }
   out.testsSaved = testsSaved;
   if (f.size() > 6) {
     if (!isQuoted(f[6])) {
@@ -286,46 +302,70 @@ bool parsePfactor(string value, u32 lineNo, WorktodoEntry& out, string& err) {
 bool parseAssignedBounds(const vector<string>& f, u32 lineNo, const char* keyword,
                          WorktodoEntry& out, string& err) {
   const string where = "worktodo.txt line " + to_string(lineNo) + ": ";
+  // B2 is REQUIRED, as it is in Prime95: its reader does
+  //     if ((q = strchr (q+1, ',')) == NULL) goto illegal_line;
+  // before reading B2, so a line that stops after B1 is not a Prime95 line at
+  // all. Write 0 instead -- Prime95 clamps B2 up to B1
+  //     if (pm1data.C < pm1data.B) pm1data.C = pm1data.B;
+  // and then gates every stage-2 field on C > B, so B2 = 0, B2 = B1 and any
+  // B2 below B1 all mean "stage 1 alone" there, and mean it here too. Any of
+  // those overrides config.txt's `stages`: a line naming B1 alone has asked
+  // for stage 1 alone.
   if (f.size() < 6) {
-    err = where + keyword + " needs k,b,n,c,B1,B2";
+    err = where + keyword + " needs k,b,n,c,B1,B2 (B2 = 0 for stage 1 only)";
     return false;
   }
   double b1 = 0, b2 = 0;
-  if (!parseDoubleField(f[4], b1) || !parseDoubleField(f[5], b2)
-      || !(b1 >= 2) || !(b2 >= 2)) {
-    err = where + "malformed B1/B2";
+  // An UPPER bound as well, and not only to keep out absurd values: "b1 >= 2"
+  // alone admits +inf, which reaches u64(inf + 0.5) and is undefined. The
+  // positive form was added to refuse NaN and does; infinity satisfies every
+  // >= test there is, so it needed the other end. B2 was already safe because
+  // it has the machine-word cap; B1 had nothing above it at all.
+  if (!parseDoubleField(f[4], b1) || !(b1 >= 2 && b1 <= STAGE2_B2_MAX)) {
+    err = where + "B1 " + f[4] + " must be 2.."
+        + to_string(u64(STAGE2_B2_MAX));
     return false;
   }
-  // Positive-form range tests above, and an explicit ceiling here. "b1 < 2"
-  // let NaN straight through (NaN < 2 is false), and an out-of-range B2 was
-  // worse than useless: chooseBounds discards every candidate above 4e9, its
-  // candidate list comes back empty, and the default-constructed Bounds it
-  // then returns means B1 = 0 -- a run that does no stage 1 at all and
-  // reports "no factor" for an assignment that asked for real work.
-  if (!(b2 <= STAGE2_B2_MAX)) {
-    err = where + "B2 " + f[5] + " is above this program's limit of "
-        + to_string(u64(STAGE2_B2_MAX))
-        + " (stage 2's setup exponents must fit a machine word)";
-    return false;
+  {
+    // !(b2 >= 0) rather than b2 < 0, so NaN is refused rather than sliding
+    // through as it once did: NaN compares false against everything.
+    if (!parseDoubleField(f[5], b2) || !(b2 >= 0)) {
+      err = where + "malformed B2";
+      return false;
+    }
+    // The cap applies to a B2 that will actually be walked. Stage 2 forms
+    // (m*D)^2 as a machine word, and chooseBounds discards every candidate
+    // above the cap -- which used to leave its candidate list empty and hand
+    // back B1 = 0, a run that did no stage 1 at all and reported "no factor".
+    if (!(b2 <= STAGE2_B2_MAX)) {
+      err = where + "B2 " + f[5] + " is above this program's limit of "
+          + to_string(u64(STAGE2_B2_MAX))
+          + " (stage 2's setup exponents must fit a machine word)";
+      return false;
+    }
   }
+
   out.assignedB1 = u64(b1 + 0.5);
-  out.assignedB2 = u64(b2 + 0.5);
-  if (out.assignedB2 <= out.assignedB1) {
-    err = where + "B2 must be greater than B1";
-    return false;
-  }
+  // B2 == B1 is this program's spelling of "no stage 2", the same one
+  // chooseBounds and writeResultJson already read: bounds with b2 == b1 give
+  // runStage2 == false, and results.txt omits "b2" exactly as Prime95 does
+  // for a stage-1-only result.
+  const u64 rawB2 = u64(b2 + 0.5);
+  out.assignedB2 = rawB2 > out.assignedB1 ? rawB2 : out.assignedB1;
   out.hasAssignedBounds = true;
 
-  // An assignment line always asks for a stage 2 (B2 > B1 is enforced just
-  // above), and stage 2's pairing needs every prime it walks to exceed w*D/2
-  // -- with the smallest shape this program has, D = 210 and w = 1, that
-  // floor is 105. An assigned B1 under it is not a small job but an
-  // impossible one: buildStage2Plan throws, and it throws only once stage 1
-  // has already run to completion, leaving the entry queued to fail the same
-  // way on every restart. Refuse it here, where the line can name itself.
-  if (out.assignedB1 < STAGE2_MIN_B1) {
+  // Only a line that actually asks for stage 2 has to clear stage 2's floor.
+  // Stage 2's pairing needs every prime it walks to exceed w*D/2, and with the
+  // smallest shape available -- D = 210, w = 1 -- that floor is 105. An
+  // assigned B1 under it is not a small stage 2 but an impossible one:
+  // buildStage2Plan throws, and only once stage 1 has already run to
+  // completion, leaving the entry queued to fail the same way on every
+  // restart. A stage-1-only line has no such constraint, so B1 = 10 is a
+  // perfectly good (if tiny) job when no stage 2 follows it.
+  if (out.assignedB2 > out.assignedB1 && out.assignedB1 < STAGE2_MIN_B1) {
     err = where + "B1 " + f[4] + " is below " + to_string(STAGE2_MIN_B1)
-        + ", the smallest B1 stage 2 can pair against";
+        + ", the smallest B1 stage 2 can pair against"
+          " (set B2 to 0 to run stage 1 alone at this B1)";
     return false;
   }
   return true;
@@ -343,6 +383,14 @@ bool parseTrailingKnownFactors(const vector<string>& f, size_t cursor, u32 lineN
   string what;
   if (!parseKnownFactors(f[cursor], out.exponent, out.knownFactors, what)) {
     err = "worktodo.txt line " + to_string(lineNo) + ": " + what;
+    return false;
+  }
+  // The known-factors quote is the LAST field there is. Anything after it was
+  // silently ignored until the acceptance matrix asked what happened to it --
+  // and a field nobody reads is a field somebody meant.
+  if (cursor + 1 < f.size()) {
+    err = "worktodo.txt line " + to_string(lineNo) + ": unexpected field '"
+        + f[cursor + 1] + "' after the known-factors list";
     return false;
   }
   return true;
@@ -392,19 +440,27 @@ bool parsePplus1(string value, u32 lineNo, WorktodoEntry& out, string& err) {
   if (!parseAssignedBounds(f, lineNo, "Pplus1=", out, err)) { return false; }
   out.method = WorktodoEntry::PP1_ONLY;
 
+  // nth_run is positional and sits after B2, so a Pplus1= line has to carry
+  // B2 even to say "no stage 2" -- write 0 there. Pminus1= has no such
+  // constraint and may simply stop after B1.
   if (f.size() < 7) {
-    err = "worktodo.txt line " + to_string(lineNo) + ": Pplus1= needs k,b,n,c,B1,B2,nth_run";
+    err = "worktodo.txt line " + to_string(lineNo) + ": Pplus1= needs k,b,n,c,B1,B2,nth_run"
+        + " (B2 = 0 for stage 1 only)";
     return false;
   }
+  // 1, 2 and 3 exhaust the distinct behaviours: 2/7, 6/5, and a random start.
+  // Prime95 accepts higher numbers, each drawing another random pair, but this
+  // program DERIVES its random start from (exponent, run) so that a resumed run
+  // recomputes it -- and a derived start makes run 4 no more independent of
+  // run 3 than a second roll of a fixed die. Refusing them says so, rather than
+  // quietly accepting a line whose extra runs would add nothing.
   u64 nth = 0;
-  if (!parseExactU64(f[6], nth) || nth < 1) {
+  if (!parseExactU64(f[6], nth) || nth < 1 || nth > 3) {
     err = "worktodo.txt line " + to_string(lineNo) + ": nth_run " + f[6]
-        + " must be a positive integer";
+        + " must be 1, 2 or 3 (2/7, 6/5, or a random start)";
     return false;
   }
-  // Only ever used as an index into pp1_seeds, so the exact magnitude of an
-  // absurd value does not matter -- but it must not wrap on the way into u32.
-  out.pp1NthRun = u32(nth > 1000 ? 1000 : nth);
+  out.pp1NthRun = u32(nth);
 
   size_t cursor = 7;
   if (cursor < f.size() && !isQuoted(f[cursor])) {
@@ -1182,6 +1238,8 @@ int runWorktodoTests() {
     static const Bad BADPP1[] = {
       { "Pplus1=1,2,1000099,-1,100000,3000000",      "nth_run is not optional" },
       { "Pplus1=1,2,1000099,-1,100000,3000000,0",    "nth_run 0 is not a run" },
+      { "Pplus1=1,2,1000099,-1,100000,3000000,4",    "nth_run 4: only 1, 2, 3 exist" },
+      { "Pplus1=1,2,1000099,-1,100000,3000000,99",   "nth_run 99" },
       { "Pplus1=1,2,1000099,-1,100000,3000000,x",    "nth_run must be an integer" },
       { "Pplus1=1,2,1000099,-1,10,3000000,1",        "B1 floor, shared with Pminus1=" },
       { "Pplus1=1,2,1000099,-1,100000,1e18,1",       "B2 cap, shared with Pminus1=" },
@@ -1200,6 +1258,90 @@ int runWorktodoTests() {
     if (!badOk) { ++fails; }
     printf("     %s  %zu malformed Pplus1= lines refused, each with a reason\n",
            badOk ? "PASS" : "FAIL", sizeof(BADPP1) / sizeof(BADPP1[0]));
+  }
+
+  filesystem::remove(TEST_FILE);
+  filesystem::remove(string(TEST_FILE) + ".tmp");
+
+  printf("\n  S. B2 at or below B1: stage 1 alone, overriding config.txt\n");
+  {
+    // Prime95's own idiom: B2 <= B1 means "no stage 2" (it clamps C up to B,
+    // then gates every stage-2 field on C > B). All the spellings below mean
+    // the same thing, and this program stores that as assignedB2 == assignedB1
+    // -- which is what chooseBounds already reads as "no stage 2" and what
+    // writeResultJson already reads as "omit b2".
+    struct S { const char* line; u64 b1; const char* why; };
+    static const S STAGE1[] = {
+      { "Pminus1=1,2,1000099,-1,100000,0",        100000, "B2 = 0" },
+      { "Pminus1=1,2,1000099,-1,100000,100000",   100000, "B2 = B1" },
+      { "Pminus1=1,2,1000099,-1,100000,50000",    100000, "B2 below B1, clamped up" },
+      // The stage-2 B1 floor does not apply when no stage 2 follows: a tiny
+      // B1 is a small job, not an impossible one.
+      { "Pminus1=1,2,1000099,-1,10,0",                 10, "B1 under the stage-2 floor is fine alone" },
+      { "Pplus1=1,2,1000099,-1,100000,0,1",       100000, "Pplus1= says it with B2 = 0" },
+    };
+    bool allOk = true;
+    for (const S& c : STAGE1) {
+      writeRaw(TEST_FILE, string(c.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      const bool ok = loadWorktodo(TEST_FILE, out, err) && out.size() == 1
+                   && out[0].hasAssignedBounds
+                   && out[0].assignedB1 == c.b1
+                   && out[0].assignedB2 == c.b1;   // B2 == B1 == "stage 1 only"
+      if (!ok) {
+        allOk = false;
+        printf("  FAIL '%s' (%s): b1=%llu b2=%llu %s\n", c.line, c.why,
+               out.empty() ? 0ull : (unsigned long long) out[0].assignedB1,
+               out.empty() ? 0ull : (unsigned long long) out[0].assignedB2, err.c_str());
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  %zu spellings of \"B1 only\", all giving B2 == B1\n",
+           allOk ? "PASS" : "FAIL", sizeof(STAGE1) / sizeof(STAGE1[0]));
+
+    // A line that really does ask for stage 2 keeps every rule it had.
+    struct Bad { const char* line; const char* why; };
+    static const Bad STILLBAD[] = {
+      { "Pminus1=1,2,1000099,-1,10,200000",   "B1 under the floor WITH a stage 2" },
+      { "Pminus1=1,2,1000099,-1,104,200000",  "B1 = 104, one under the floor" },
+      { "Pminus1=1,2,1000099,-1,100000,1e18", "B2 over the machine-word cap" },
+      { "Pminus1=1,2,1000099,-1,1",           "B1 = 1 is below any B1" },
+      { "Pminus1=1,2,1000099,-1,nan",         "NaN B1" },
+      { "Pminus1=1,2,1000099,-1,100000,nan",  "NaN B2" },
+      { "Pminus1=1,2,1000099,-1,100000,-5",   "negative B2" },
+      { "Pplus1=1,2,1000099,-1,100000",       "Pplus1= still needs nth_run after B2" },
+      // B2 is not optional, exactly as in Prime95, whose reader rejects a
+      // line that stops after B1. Write 0 there instead.
+      { "Pminus1=1,2,1000099,-1,100000",      "B2 field omitted entirely" },
+      { "Pminus1=1,2,1000099,-1,10",          "B2 omitted, small B1" },
+    };
+    bool badOk = true;
+    for (const Bad& b : STILLBAD) {
+      writeRaw(TEST_FILE, string(b.line) + "\n");
+      vector<WorktodoEntry> out;
+      string err;
+      if ((loadWorktodo(TEST_FILE, out, err) && !out.empty()) || err.empty()) {
+        badOk = false;
+        printf("  FAIL accepted '%s' (%s)\n", b.line, b.why);
+      }
+    }
+    if (!badOk) { ++fails; }
+    printf("     %s  %zu lines that DO ask for stage 2 keep every rule\n",
+           badOk ? "PASS" : "FAIL", sizeof(STILLBAD) / sizeof(STILLBAD[0]));
+
+    // resolveBounds must carry B2 == B1 through untouched, whatever config
+    // says: this is the half that makes it override config.txt.
+    writeRaw(TEST_FILE, "Pminus1=1,2,1000099,-1,100000,0\n");
+    { vector<WorktodoEntry> out; string err;
+      const bool loaded = loadWorktodo(TEST_FILE, out, err) && out.size() == 1;
+      const ResolvedBounds rb = loaded ? resolveBounds(out[0], 7777, 88888888)
+                                       : ResolvedBounds{0, 0};
+      const bool ok = loaded && rb.b1 == 100000 && rb.b2 == 100000;
+      if (!ok) { ++fails; }
+      printf("     %s  config.txt b1=7777 b2=88888888 does not leak in (got %llu/%llu)\n",
+             ok ? "PASS" : "FAIL",
+             (unsigned long long) rb.b1, (unsigned long long) rb.b2); }
   }
 
   filesystem::remove(TEST_FILE);
