@@ -1,0 +1,92 @@
+===========================================================================
+  worktodo_instructions.txt -- how the exponent queue works
+
+  Reference only. The program never reads this file. The queue itself is
+  worktodo.txt, which ships EMPTY so a fetcher can write straight into it.
+===========================================================================
+
+
+HOW THE QUEUE WORKS
+
+  One line per job, top to bottom. Mp_p-1_gpu works the first line, removes
+  it once that job is done (found a factor or not -- either way the result
+  is in results.txt), then moves to the next. '#' starts a comment; blank
+  lines are ignored -- the same convention as config.txt.
+
+  If a job is interrupted (Ctrl+C, or the program is killed), its line stays
+  untouched -- relaunching resumes that exponent from its checkpoint, then
+  continues down the queue.
+
+  If a job FAILS -- an error, not "no factor found"; for example an exponent
+  too small for any FFT shape to hold -- the queue stops there and that line
+  is left in place too, so you can fix or remove it before continuing.
+
+  When the queue runs dry, `wait_for_work` in config.txt decides whether the
+  program exits or waits for more work to appear. The shipped config.txt sets
+  it to yes, for running alongside a fetcher.
+
+
+WHAT A LINE LOOKS LIKE
+
+  A bare exponent:
+
+    82589933
+
+  or a Pfactor= / Pminus1= / Pplus1= assignment, the shape AutoPrimeNet
+  (github.com/tdulcet/AutoPrimeNet) and Prime95 itself write:
+
+    Pminus1=1,2,82589933,-1,1000000,30000000
+
+  All shapes accept an optional leading assignment ID -- 32 hex characters
+  followed by a comma, before the k field:
+
+    Pminus1=88D8BAFFFF12E5DDD3FB093FEFE04025,1,2,82589933,-1,1000000,30000000
+
+  The full field layout of each shape, optional parts in brackets:
+
+    Pfactor=[aid,]1,2,<exponent>,-1,<how_far_factored>,<tests_saved>[,"<known_factors>"]
+    Pminus1=[aid,]1,2,<exponent>,-1,<B1>,<B2>[,<sieve_depth>[,<B2_start>[,"<known_factors>"]]]
+    Pplus1=[aid,]1,2,<exponent>,-1,<B1>,<B2>,<nth_run>[,<how_far_factored>[,"<known_factors>"]]
+
+  MANUAL.md has the full description of every field.
+
+
+WHAT THE LINE OVERRIDES
+
+  Entries run under config.txt's settings. Only the exponent, and whatever
+  the assignment line itself supplies, varies per entry -- and where a line
+  does supply a value, THE LINE WINS over config.txt, without exception:
+
+    B1 / B2            a Pminus1= or Pplus1= line's own bounds are used as
+                       given. A Pfactor= line or a bare exponent has none,
+                       and falls back to config.txt's b1/b2.
+    method             a Pminus1= line runs P-1 and ONLY P-1; a Pplus1= line
+                       runs P+1 and ONLY P+1. The line names the work, so the
+                       line wins. A Pfactor= line and a bare exponent name no
+                       method and use config.txt's `method`.
+    stages             bounds giving B1 alone (B2 = 0, B2 = B1, or B2 < B1)
+                       mean stage 1 alone, whatever `stages` says.
+    factored_to        from a Pfactor= line's how_far_factored, or a
+                       Pminus1=/Pplus1= line's sieve_depth when in range.
+    bias               from a Pfactor= line's tests_saved, when non-zero.
+    pp1_runs           a Pplus1= line's nth_run replaces the whole list.
+
+
+MINIMUM EXPONENT: 786613
+
+  Below that, even the smallest FFT shape in the catalog (256x256x2) has too
+  few bits per word to be usable, and every command -- --bounds, --tune, a
+  real run -- fails with "no FFT fits this exponent".
+
+
+USING IT WITH AUTOPRIMENET
+
+  Leave worktodo.txt empty and let AutoPrimeNet fill it. It reads the file,
+  counts the assignments already there, and fetches only the difference
+  against your days_of_work setting -- so existing content is topped up, not
+  an obstacle. New assignments are appended to the end; it never looks for a
+  blank line to fill, and comments do not count as assignments.
+
+  Set `wait_for_work = yes` in config.txt (the shipped default) so this
+  program waits rather than exiting when the queue is momentarily empty.
+

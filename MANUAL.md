@@ -83,8 +83,8 @@ and the generated file is committed so the build works without it.
 
 ## Quick start
 
-Add an exponent to `worktodo.txt` (one per line — see that file's own header
-comment for the queue format):
+Add an exponent to `worktodo.txt` (one per line — it ships empty; see
+`worktodo_instructions.txt` for the queue format):
 
 ```
 81679223
@@ -130,7 +130,7 @@ touch:
 | `bounds_tolerance` | how much extra work to accept for a better chance |
 | `gcd_threads` | CPU threads for the gcd phase — no longer consulted by the default gcd (GMP's `mpz_gcd`, single-threaded, since 1.8); still respected by this program's own `gcdHalf` implementation, kept as the reversion path |
 | `user`, `computer` | written into `results.txt` as `"user"`/`"computer"`, the same fields Prime95 writes, so a manual upload is credited correctly. `username`/`computer_name` are accepted as aliases. Omitted from the line when unset |
-| `wait_for_work` | `yes` (default) waits and rechecks an empty queue, so AutoPrimeNet can refill it; `no` exits instead |
+| `wait_for_work` | `yes` waits and rechecks an empty queue, so AutoPrimeNet can refill it; `no` exits instead. The shipped config.txt sets `yes`; the compiled-in value, used only when the key is absent, is `no` |
 | `wait_poll_seconds` | how often to recheck, when `wait_for_work = yes` — default 5 |
 
 ## worktodo.txt — the exponent queue
@@ -138,7 +138,14 @@ touch:
 As of 1.4, exponents no longer live in `config.txt` — they live in
 `worktodo.txt` (or whatever `worktodo_file` points at), one per line,
 processed top to bottom. `#` starts a comment, blank lines are ignored, same
-as `config.txt`. A bare exponent is this program's own shorthand: such an
+as `config.txt`.
+
+**The shipped `worktodo.txt` is empty**, so a fetcher can write straight into
+it and so nothing has to be deleted before the first run. The reference that
+used to be its header comment is now `worktodo_instructions.txt`, which the
+program never reads.
+
+A bare exponent is this program's own shorthand: such an
 entry runs entirely under `config.txt`'s settings — `method`, `b1`/`b2`,
 `bias`, `factored_to`, `stages` and the rest — with only the exponent coming
 from the queue. An assignment line supplies some of those itself, and what it
@@ -507,9 +514,22 @@ walked:
 result whenever B2 > B1, and for a factor only when **stage 2 is what found
 it**. A factor found by stage 1 reports `b1` alone, even if a stage 2 was
 configured — Prime95 does the same, and it is the honest report, since no
-stage-2 gcd ran to cover (B1, B2]. In this program stage 2 may in fact have
-run: it is overlapped with the stage-1 gcd and discarded if that gcd wins the
-race. Discarded work is not coverage.
+stage-2 gcd ran to cover (B1, B2].
+
+As of 1.9.6 that is *literally* true here and not merely a convention. Stage 1's
+gcd is CPU-only, so it runs on a background thread while stage 2 walks on the
+GPU; the moment it reports a factor that is not already known, **stage 2 stops**
+rather than finishing a walk whose result is about to be thrown away. Prime95
+reaches the same place by a different route — its stage-1 GCD jumps straight
+past the entire stage-2 body, and running stage 2 anyway is an opt-in `Stage1GCD`
+INI setting. Measured on M24000577 at B1=300000, B2=9000000, with the factor
+13504596665207 landing in stage 1: **2m59s before, 3.7s after**, the walk
+abandoned at 0.5%.
+
+The abort is gated on the *known-factor* filter, not on the raw gcd. A
+rediscovered known factor is dropped and the job carries on into stage 2 — that
+is how a line reaches stage 2 at all — so aborting on the raw result would turn
+those runs into no-factor results.
 
 Such a line also carries **`stage2-fft-length`**, in Prime95's position for it:
 after `d`, immediately before `fft-length`. Here the two are **always equal**,

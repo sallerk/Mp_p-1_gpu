@@ -15,6 +15,8 @@
 #include "GpuCommon.h"
 #include "FFTConfig.h"
 
+#include <atomic>
+
 #include <vector>
 #include <memory>
 #include <filesystem>
@@ -474,8 +476,11 @@ public:
   // whole of stage 2 it would be speeding up).
   //
   // T is sized by the caller and owns the buffers; xBuf must already hold x.
-  void buildStage2Table(vector<Buffer<Word>>& T, Buffer<Word>& xBuf,
-                        const Stage2Plan& plan);
+  // Returns false if it stopped early because *abortIf went true; the table
+  // is then incomplete and the caller must not walk with it.
+  bool buildStage2Table(vector<Buffer<Word>>& T, Buffer<Word>& xBuf,
+                        const Stage2Plan& plan,
+                        const std::atomic<bool>* abortIf = nullptr);
 
   // Builds the table with buildStage2Table and checks every entry against a
   // direct powSmall(x, j*j), returning the number that differ -- 0 means the
@@ -496,7 +501,14 @@ public:
                RoeInfo* mulRoeOut = nullptr, bool normalizeDiff = false,
                const Stage2Pos* resume = nullptr, u32 saveEvery = 0,
                const std::function<void(const Stage2Pos&)>& save = {},
-               Stage2Pos* stoppedAt = nullptr, const Words* accSeed = nullptr);
+               Stage2Pos* stoppedAt = nullptr, const Words* accSeed = nullptr,
+               // Polled in BOTH the T_j table build and the walk. Set it and
+               // stage 2 stops at the next check, reporting where it got to in
+               // *stoppedAt exactly as an interrupt does. Kept separate from
+               // `progress` on purpose: progress carries done/total accounting
+               // that the table build has no meaningful values for, and one
+               // mechanism meaning two things is how this bug comes back.
+               const std::atomic<bool>* abortIf = nullptr);
 
   // V_n(base, 1) mod (2^E-1), for an ARBITRARY full-residue base (unlike
   // lucasV, whose `seed` is a small u32 baked in via a dedicated small-constant

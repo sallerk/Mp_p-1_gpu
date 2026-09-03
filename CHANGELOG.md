@@ -1,5 +1,110 @@
 # Changelog
 
+## 1.9.6
+
+**Stage 2 stops the moment the overlapped stage-1 gcd finds a factor, instead
+of finishing a walk whose result is already known to be worthless.**
+
+### the wasted walk
+
+Stage 1's gcd is CPU-only, so it runs on a background thread while stage 2 walks
+on the GPU. That overlap is a bet, and when stage 1 came up empty -- the common
+case -- it pays: the gcd costs nothing, having finished during a walk that had to
+happen anyway.
+
+The losing side was being paid in full. `runPM1Stage2` ran to completion and only
+then did `gcdTask.get()` reveal that stage 1 had the factor all along, at which
+point the whole walk was discarded. Stage 1's gcd can land in seconds while stage
+2 runs for many minutes, so essentially all of it was wasted wall time.
+
+Measured on **M24000577**, B1=300000 B2=9000000, factor 13504596665207 found by
+stage 1, everything else held constant:
+
+```
+before   2m59s     gcd had the factor at 3s, then 399898 muls (2m50s) plus a
+                   second 7s gcd on an accumulator about to be thrown away
+after    3.7s      [4/5 stage 2 GPU] stage 1's gcd found a factor
+                                     -- abandoned at 0.5%
+```
+
+On a fresh run with no stage-1 checkpoint that is about 4m40s falling to 1m55s.
+
+Prime95 arrives at the same place by a different route: its stage-1 GCD does
+`goto bingo`, jumping past the entire stage-2 body, and running stage 2 anyway is
+an opt-in `Stage1GCD` INI setting. It can skip stage 2 because its gcd happens
+first; this program has already started stage 2 by then, so it stops it instead.
+
+### what the flag is gated on
+
+Not the raw gcd result -- the gcd result **after the known-factor filter**. A
+rediscovered known factor is dropped and the job carries on into stage 2, which
+is precisely how a line reaches stage 2 in the first place. Aborting on the raw
+result would have turned every such run into a no-factor result, silently. The
+background thread therefore applies `isKnownFactor` itself before raising the
+flag, as a pure read: the main thread still runs `dropKnownFactors` for its own
+reporting, unchanged.
+
+Composite divisors count too. A divisor that cannot be split ends the job as a
+status `C` result just as a prime one ends it as `F`, so it stops stage 2 the
+same way.
+
+### two loops, not one
+
+`Gpu::stage2` polls the flag in the walk loop **and** in the `T_j` table-build
+chain, which previously had no exit of any kind. At D=2310, w=9 that chain is
+~10400 multiplies against ~85000 for the walk -- a tenth of stage 2, and minutes
+at a large exponent. Without the second check an abort raised during the build
+would have waited for the whole build to finish.
+
+`PM1Stage2Result` gains **`abandoned`**, kept apart from `interrupted` because
+the two demand opposite things of the caller: one says "this work is moot, the
+job ends on stage 1's factor", the other says "resume me later". Reporting an
+abort as an interrupt would read, in an unattended log, as though someone had
+stopped the run.
+
+A partial checkpoint is still written when the abort lands mid-walk: it is real
+work, and a valid resume point if the exponent is ever re-run with that factor
+declared known. Verified rather than assumed -- the re-run resumed from it and
+produced accumulator res64 `808b79c123ae915a`, bit for bit what the full
+uninterrupted walk produced.
+
+### results.txt is unchanged, and now true
+
+A stage-1 find still reports `b1` alone, with no `b2`, `d` or
+`stage2-fft-length`. That was already Prime95's rule; what changes is that it is
+now literally accurate. Before, the line said no stage 2 had covered (B1, B2]
+while a stage 2 had in fact run to completion and been thrown away.
+
+`--selftest=stage2` gains a section driving the flag directly, so the two stop
+reasons stay distinguished without needing a real factor and a stopwatch: with
+the flag raised up front the walk stops inside the table build and reports
+`abandoned` and not `interrupted`; with it clear the same bounds walk normally,
+252x slower.
+
+### tools/genmatrix.py and tools/checkmatrix.py
+
+`tools/genmatrix.py`'s `PARSE_OK` group was labelled "valid but too costly to
+run". Five of its eight lines were never expensive, and three were verbatim
+copies of accept lines that do run: `Pfactor=1,2,1000273,-1,127,2` (accept 7),
+`Pfactor=1,2,1000273,-1,70,100` (accept 9) and `Pminus1=1,2,1000273,-1,2,0`
+(accept 18). Only three -- B2 at the cap, B1 at the cap, and the largest
+allowed exponent -- cannot be run inside a test.
+
+The five were not junk, but they were under a heading that did not describe
+them. `--bounds` is a separate code path, with its own peek at the queued entry
+and its own per-entry overrides, and 1.9.4 fixed three bugs living exactly
+there -- pinned bounds ignored, the peek taking only the exponent, a tolerance
+sweep printed where one candidate leaves nothing to choose between -- every one
+of which the run path was already getting right. Putting the same input through
+both paths is the point; it just needed saying. Now `TOO_COSTLY` (3) and
+`BOUNDS_PATH` (5), each with its reason written down, and the duplicates name
+the accept line they repeat.
+
+`tools/checkmatrix.py`'s summary counted neither group: it printed
+"all 67 lines ... 61 refusals: OK" whether that list held 8 entries or 0. It
+now reports every group's size, so a list that silently empties cannot pass
+unnoticed.
+
 ## 1.9.5
 
 **`results.txt` emits `stage2-fft-length` on P-1 lines whose stage 2 produced
@@ -190,8 +295,9 @@ The acceptance harness, in two scenarios:
     job RESOLVED `factored_to` and `bias` to -- read back from its own startup
     line, so the precedence chain is verified rather than assumed. Twelve log
     assertions; 61 malformed lines fed in one at a time, since the queue is
-    fail-fast and a bad line cannot share a file with good ones; and 8 lines
-    that are valid but too costly to run, checked through `--bounds`.
+    fail-fast and a bad line cannot share a file with good ones; and 8 valid
+    lines checked through `--bounds` rather than by running (see Unreleased:
+    the label on that group was wrong, and is now two groups).
   - `resume`: three lines at one (exponent, B1) with rising B2 and
     checkpointing ON, the only way to reach this program's own B2 extension.
     Asserts the second walks only (525, 2000] instead of redoing (200, 2000],

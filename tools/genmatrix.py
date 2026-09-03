@@ -326,18 +326,32 @@ REJECT = [
     ("AID with a non-hex character",  f"Pminus1={AID[:-1]}Z,1,2,{E},-1,200,2000"),
 ]
 
-# Valid lines that are too expensive to RUN -- huge bounds, the largest allowed
-# exponent -- but whose parsing is worth asserting. Fed through --bounds, which
-# parses and chooses without doing any of the work.
-PARSE_OK = [
+# Both lists below are checked through --bounds, which parses the line and
+# reports the plan without doing any of the work. They are kept apart because
+# the REASON differs, and one label covering both was simply wrong: five of the
+# eight were never expensive, and three were verbatim copies of accept lines.
+
+# Cannot be run at all inside a test: the bounds or the exponent make the job
+# hours to days.
+TOO_COSTLY = [
     ("B2 exactly at the cap",         f"Pminus1=1,2,{E},-1,200,4000000000"),
     ("B1 just under B2 at the cap",   f"Pminus1=1,2,{E},-1,3999999999,4000000000"),
     ("largest allowed exponent",      "Pminus1=1,2,4294967291,-1,200,2000"),
+]
+
+# Cheap enough to run -- and three of them DO run, as accept lines. They are
+# repeated here because --bounds is a separate code path: it has its own peek
+# at the queued entry and applies that entry's own depth and tests_saved. 1.9.4
+# fixed three bugs living exactly there (pinned bounds ignored, the peek taking
+# only the exponent, a tolerance sweep printed where it means nothing), all of
+# which the run path was already getting right. So the same input through both
+# paths is the point, not an oversight.
+BOUNDS_PATH = [
     ("smallest allowed exponent",     "Pminus1=1,2,786613,-1,200,2000"),
     ("AID in lower-case hex",         f"Pminus1={AID.lower()},1,2,{E},-1,200,2000"),
-    ("how_far_factored 127 with real bounds", f"Pfactor=1,2,{E},-1,127,2"),
-    ("tests_saved 100 with real bounds",      f"Pfactor=1,2,{E},-1,70,100"),
-    ("B1 = 2 with no stage 2",        f"Pminus1=1,2,{E},-1,2,0"),
+    ("how_far_factored 127 (also accept line 7)",  f"Pfactor=1,2,{E},-1,127,2"),
+    ("tests_saved 100 (also accept line 9)",       f"Pfactor=1,2,{E},-1,70,100"),
+    ("B1 = 2, no stage 2 (also accept line 18)",   f"Pminus1=1,2,{E},-1,2,0"),
 ]
 
 def main():
@@ -354,7 +368,7 @@ def main():
             f.write(c["line"] + "\r\n")
     with open("expected.json", "w") as f:
         json.dump(dict(scenario=scenario, cases=CASES, reject=REJECT,
-                   parse_ok=PARSE_OK), f, indent=1)
+                   too_costly=TOO_COSTLY, bounds_path=BOUNDS_PATH), f, indent=1)
     print(f"{len(CASES)} lines written for the {scenario} scenario")
 
 if __name__ == "__main__":

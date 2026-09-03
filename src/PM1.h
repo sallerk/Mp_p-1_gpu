@@ -15,6 +15,8 @@
 #include "Config.h"
 #include "common.h"
 
+#include <atomic>
+
 #include <string>
 #include <vector>
 
@@ -50,6 +52,11 @@ struct PM1Result {
 struct PM1Stage2Result {
   bool foundFactor = false;
   bool interrupted = false;
+  // Stopped early because the overlapped stage-1 gcd already had a factor,
+  // which ends the job -- NOT the user interrupting, which does not. Kept
+  // apart from `interrupted` because the two demand opposite things of the
+  // caller: one says "resume this later", the other says "this work is moot".
+  bool abandoned = false;
   u64 b1 = 0, b2 = 0;
   u32 d = 0, w = 0;
   double stage2Secs = 0;
@@ -69,8 +76,15 @@ struct Stage2Plan;
 // run to a smaller B2 turns this into a walk over (thatB2, b2] seeded with its
 // accumulator. Keeping that decision here puts all of stage 2's checkpoint
 // policy in one place, next to the B1 extension it mirrors.
+// abortIf, when set and raised, stops the walk (and the table build) at the
+// next check and returns with `abandoned` set. Prime95 does the same thing by
+// never starting stage 2: its stage-1 GCD does `goto bingo`, jumping past the
+// whole stage-2 body (ecm.cpp), and running stage 2 anyway is an opt-in INI
+// setting there. This program cannot skip stage 2 up front because its gcd is
+// overlapped with it, so it stops it instead.
 PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Residue,
-                             u64 b1, u64 b2, u32 d, u32 w, bool showProgress);
+                             u64 b1, u64 b2, u32 d, u32 w, bool showProgress,
+                             const std::atomic<bool>* abortIf = nullptr);
 
 // 3 when stage 1 runs alone, 5 when a stage 2 follows. Set by the driver before
 // anything prints, so the "[2/5 stage 1 GPU]" tags count the real total.

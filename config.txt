@@ -25,8 +25,9 @@ computer =
 #
 #  As of 1.4, the exponent (or exponents) to work on are no longer set here --
 #  they live in worktodo_file below (worktodo.txt by default), one per line,
-#  processed in order. See that file's own header comment for the format and
-#  for the same minimum-exponent note that used to live here.
+#  processed in order. That file ships EMPTY, so a fetcher can write straight
+#  into it; see worktodo_instructions.txt for the line format, the override
+#  rules and the minimum-exponent note that used to live here.
 # ---------------------------------------------------------------------------
 
 
@@ -319,8 +320,14 @@ extend = 1
 
 # Instead of exiting when worktodo.txt runs dry, wait and keep re-checking it
 # -- for an unattended run sitting alongside AutoPrimeNet, so the queue
-# running empty for a moment doesn't need a relaunch by hand. Off by default:
-# a script or a one-shot manual run expects an empty queue to exit cleanly.
+# running empty for a moment doesn't need a relaunch by hand.
+#
+# This template ships it ON, which is what the AutoPrimeNet pairing needs.
+# The value COMPILED IN, used only when the key is absent from this file, is
+# `no`, so that a script or a one-shot manual run against a config.txt that
+# never mentions it still exits cleanly on an empty queue. Upgrading with an
+# older config.txt therefore keeps whatever that file says -- if you want the
+# waiting behaviour, set it here explicitly.
 #   wait_for_work        yes | no  (also accepts 1/0, true/false, on/off)
 #   wait_poll_seconds     how often to recheck the queue while waiting, in
 #                          seconds -- only used when wait_for_work = yes

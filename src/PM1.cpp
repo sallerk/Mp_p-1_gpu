@@ -926,7 +926,8 @@ PP1Stage2Result runPP1Stage2(Gpu& gpu, const Config& cfg, const Words& y1,
 // parameter of that name silently shadows, and the accumulator's res64 is
 // computed with it below.
 PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Residue,
-                             u64 b1, u64 b2, u32 d, u32 w, bool showProgress) {
+                             u64 b1, u64 b2, u32 d, u32 w, bool showProgress,
+                             const std::atomic<bool>* abortIf) {
   PM1Stage2Result res;
   res.b1 = b1;
   res.b2 = b2;
@@ -1119,7 +1120,8 @@ PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Res
                    saveEvery, cfg.checkpoint ? save : std::function<void(const Gpu::Stage2Pos&)>{},
                    &stoppedAt,
                    // Already folded into the saved accumulator on a resume.
-                   (!haveResume && !seedAcc.empty()) ? &seedAcc : nullptr);
+                   (!haveResume && !seedAcc.empty()) ? &seedAcc : nullptr,
+                   abortIf);
 
     if (showProgress && stdoutIsTerminal()) { printf("\r%*s\r", 110, ""); }
     res.stage2Secs = timer.at();
@@ -1131,6 +1133,33 @@ PM1Stage2Result runPM1Stage2(Gpu& gpu, const Config& cfg, const Words& stage1Res
       if (cfg.checkpoint && !stoppedAt.acc.empty()) { save(stoppedAt); }
       res.interrupted = true;
       printf("  [%s stage 2 GPU] interrupted; progress saved to %s\n", ph(4), savePath.c_str());
+      return res;
+    }
+
+    // Checked AFTER `stopped`: if the user interrupted as well, the interrupt
+    // is the answer the caller has to act on. Reaching here means the
+    // overlapped stage-1 gcd raised the flag -- it already has a factor, so
+    // this whole walk is moot and the job ends on stage 1's result.
+    //
+    // stoppedAt is empty when the abort landed inside the T_j table build,
+    // before any slot was walked: nothing to save, nothing to resume, and the
+    // best possible case for this flag.
+    if (abortIf && abortIf->load(std::memory_order_relaxed)) {
+      res.abandoned = true;
+      if (stoppedAt.acc.empty()) {
+        printf("  [%s stage 2 GPU] stage 1's gcd found a factor -- abandoned during\n"
+               "      table setup, before any of the walk ran\n", ph(4));
+      } else {
+        const double pct = total ? 100.0 * double(stoppedAt.done) / double(total) : 0.0;
+        printf("  [%s stage 2 GPU] stage 1's gcd found a factor -- abandoned at %.1f%%\n"
+               "      (%llu of %llu muls); the rest of the walk is skipped\n",
+               ph(4), pct, (unsigned long long) stoppedAt.done,
+               (unsigned long long) total);
+        // Real work, and a legitimate resume point if this exponent is ever
+        // re-run with that factor declared known -- the accumulator is bound
+        // to the stage-1 residue, so it cannot be misapplied elsewhere.
+        if (cfg.checkpoint) { save(stoppedAt); }
+      }
       return res;
     }
 

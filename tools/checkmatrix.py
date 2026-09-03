@@ -184,9 +184,16 @@ def check_log(cases, log, scenario):
     ]
     return checks
 
-def check_parse_ok(parse_ok, exe):
-    """Valid but too costly to run: assert only that they parse and choose."""
+def check_parse_ok(parse_ok, exe, what):
+    """Valid lines checked through --bounds: assert they parse and choose.
+
+    Two callers, and the distinction is the point. TOO_COSTLY cannot be run at
+    all inside a test. BOUNDS_PATH could be -- three of its lines DO run, as
+    accept lines -- and is here because --bounds is its own code path, with its
+    own peek at the queued entry and its own per-entry overrides.
+    """
     fails = []
+    print(f"  -- {what}")
     for note, line in parse_ok:
         with open("worktodo.txt", "w", newline="") as f:
             f.write(line + "\r\n")
@@ -238,8 +245,11 @@ def main():
             fails.append((0, name, ["log assertion"]))
 
     if scenario == "accept":
-        print("\n=== valid, but too costly to run: parse only ===")
-        fails += check_parse_ok(data.get("parse_ok", []), exe)
+        print("\n=== valid lines checked through --bounds (parse and plan, no work) ===")
+        fails += check_parse_ok(data.get("too_costly", []), exe,
+                                "too costly to run; parse and plan only")
+        fails += check_parse_ok(data.get("bounds_path", []), exe,
+                                "cheap, but exercising the --bounds path")
         print("\n=== inputs that must be refused (fed one at a time) ===")
         fails += check_rejects(data["reject"], exe)
 
@@ -251,8 +261,15 @@ def main():
             for p in prob:
                 print(f"      {p}")
     else:
-        print(f"all {len(data['cases'])} lines, every log assertion, and "
-              f"{len(data['reject']) if scenario == 'accept' else 0} refusals: OK")
+        # Report every group's size: a list that silently went empty would
+        # otherwise still print OK.
+        n_cost = len(data.get("too_costly", []))
+        n_path = len(data.get("bounds_path", []))
+        n_rej  = len(data["reject"]) if scenario == "accept" else 0
+        print(f"all {len(data['cases'])} lines and every log assertion: OK")
+        if scenario == "accept":
+            print(f"  {n_rej} refusals, {n_cost} too costly to run, "
+                  f"{n_path} through --bounds: OK")
     return 1 if fails else 0
 
 if __name__ == "__main__":

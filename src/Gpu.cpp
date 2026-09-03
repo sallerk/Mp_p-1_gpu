@@ -1634,8 +1634,9 @@ Words Gpu::lucasVResidue(const Words& base, u64 n) {
 }
 
 // T_j = x^(j^2) for every j in the plan. See the header for the recurrence.
-void Gpu::buildStage2Table(vector<Buffer<Word>>& T, Buffer<Word>& xBuf,
-                           const Stage2Plan& plan) {
+bool Gpu::buildStage2Table(vector<Buffer<Word>>& T, Buffer<Word>& xBuf,
+                           const Stage2Plan& plan,
+                           const std::atomic<bool>* abortIf) {
   const size_t J = plan.jset.size();
   assert(T.size() == J);
   // The stride-2 walk below only lands on odd j. buildStage2Plan rejects an odd
@@ -1656,7 +1657,16 @@ void Gpu::buildStage2Table(vector<Buffer<Word>>& T, Buffer<Word>& xBuf,
   for (u64 j = 1; i < J; j += 2) {
     if (plan.jset[i] == j) { T[i] << u; ++i; }
     if (i < J) { modMul(u, s); modMul(s, k); }
+    // This chain is ~J multiplies with no other way out -- a tenth of stage 2
+    // at a large shape, and minutes at a large exponent. Without a check here
+    // an abort raised during the build would wait for the whole build.
+    // Every 256 steps, so the queue finish does not dominate the chain.
+    if (abortIf && (j & 511) == 1) {
+      queue->finish();
+      if (abortIf->load(std::memory_order_relaxed)) { return false; }
+    }
   }
+  return true;
 }
 
 // --selftest=stage2 support. See the header.
@@ -1687,7 +1697,8 @@ Words Gpu::stage2(const Words& x, const Stage2Plan& plan, u32 reportEvery,
                   RoeInfo* mulRoeOut, bool normalizeDiff,
                   const Stage2Pos* resume, u32 saveEvery,
                   const std::function<void(const Stage2Pos&)>& save,
-                  Stage2Pos* stoppedAt, const Words* accSeed) {
+                  Stage2Pos* stoppedAt, const Words* accSeed,
+                  const std::atomic<bool>* abortIf) {
   const u64 J = plan.jset.size();
   const u64 D = plan.d;
   assert(J > 0);
@@ -1739,7 +1750,12 @@ Words Gpu::stage2(const Words& x, const Stage2Plan& plan, u32 reportEvery,
   // 0.737 to 0.783 muls/prime. Net 4.7%, for three extra kernels and 1.5x the
   // table memory -- reverted as not worth it.
   auto T = makeBufVector(u32(J));
-  buildStage2Table(T, xBuf, plan);
+  if (!buildStage2Table(T, xBuf, plan, abortIf)) {
+    // Aborted inside the table build, before a single slot was walked. There
+    // is no position to report, so stoppedAt is left empty and the caller
+    // reads that as "nothing worth saving".
+    return {};
+  }
 
   // C is needed whether starting fresh or resuming: it is the step that carries
   // S forward, and depends only on D.
@@ -1808,7 +1824,11 @@ Words Gpu::stage2(const Words& x, const Stage2Plan& plan, u32 reportEvery,
       }
       if (reportEvery && done % reportEvery == 0) {
         queue->finish();
-        if (!progress(done, total)) {
+        // Two independent reasons to stop, checked together because both need
+        // the queue finished and the same position captured. abortIf is the
+        // overlapped stage-1 gcd reporting that it already has a factor.
+        if (!progress(done, total) ||
+            (abortIf && abortIf->load(std::memory_order_relaxed))) {
           stop = true;
           if (stoppedAt) { *stoppedAt = capture(m, i + 1); }
           break;

@@ -710,13 +710,35 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // Started here, joined after stage 2 (or immediately below when there is no
   // stage 2 to overlap with). Silent while it runs: its progress line and
   // stage 2's would otherwise interleave on the same terminal.
+  // Raised by the background gcd the moment it has a factor that is NOT
+  // already known -- which is what ends the job, and therefore what makes the
+  // rest of stage 2 pointless. Prime95 never runs stage 2 at all in this case
+  // (its stage-1 GCD jumps straight past the stage-2 body); this program has
+  // already started it, so it stops it instead.
+  //
+  // The known-factor filter has to happen HERE, not in main's later
+  // dropKnownFactors: a rediscovered known factor is dropped and the job goes
+  // on to stage 2, which is exactly how a line reaches stage 2 in the first
+  // place. Aborting on the raw gcd result would silently turn those runs into
+  // no-factor results.
+  std::atomic<bool> stage1Won{false};
   std::future<void> gcdTask;
   if (overlapGcd && !gInterrupted.load()) {
     printf("  [%u/5 gcd CPU] gcd(x-1, M_p) running alongside stage 2 --"
            " reported when both finish\n", 3);
     fflush(stdout);
-    gcdTask = std::async(std::launch::async,
-                         [&r, &cfg] { finishStage1Gcd(r, cfg.exponent, false, /*announce=*/false); });
+    gcdTask = std::async(std::launch::async, [&r, &cfg, &stage1Won] {
+      finishStage1Gcd(r, cfg.exponent, false, /*announce=*/false);
+      // A pure read of r: the reporting path on the main thread still runs
+      // dropKnownFactors itself, so nothing here mutates or logs. Composite
+      // divisors count too -- a status C result ends the job just as a prime
+      // one does.
+      if (r.foundFactor) {
+        for (const FoundFactor& ff : r.factors) {
+          if (!isKnownFactor(cfg, ff)) { stage1Won.store(true); break; }
+        }
+      }
+    });
   }
 
   // Reported only once the gcd has actually answered. When it is overlapped
@@ -755,7 +777,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     // The plan is built inside: which range actually has to be walked depends
     // on whether a completed stage 2 for a smaller B2 is on disk.
     s2 = runPM1Stage2(*gpu, cfg, r.residue, b1, bounds.b2,
-                      shape.d, shape.w, true);
+                      shape.d, shape.w, true, &stage1Won);
     ranStage2 = true;
   }
 
@@ -787,8 +809,11 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       // Stage 1 had it all along. Whatever stage 2 computed meanwhile is
       // discarded -- that is the losing side of the bet, and it still ends
       // the job with a factor.
-      if (ranStage2) {
-        printf("  stage 1's gcd found a factor; the overlapped stage 2 is discarded\n");
+      if (ranStage2 && !s2.abandoned) {
+        // The gcd landed after stage 2 had already finished, so there was
+        // nothing left to skip. No wasted time -- the bet simply lost late.
+        printf("  stage 1's gcd found a factor; the overlapped stage 2 had already\n"
+               "  finished and is discarded\n");
       }
       reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0);
       log("  appended to %s\n", cfg.resultsFile.c_str());
@@ -804,6 +829,15 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
 
   if (ranStage2) {
     printf("\n");
+    // Reaching here with `abandoned` set is a contradiction: the flag is
+    // raised only by the gcd finding a factor that survives the known-factor
+    // filter, and that path reports and returns above. Say so rather than
+    // quietly reporting a stage 2 that was cut short as though it had run.
+    if (s2.abandoned) {
+      log("  !!! stage 2 was abandoned but stage 1 reports no factor -- this is a\n"
+          "      bug, please report. Not writing a stage-2 result for M%u.\n", cfg.exponent);
+      return 1;
+    }
     if (s2.interrupted) {
       log("  interrupted during stage 2; resume by running again.\n");
       return 1;

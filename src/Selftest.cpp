@@ -1306,6 +1306,63 @@ int runStage2Tests(GpuCommon shared, Queue* q, const string& fftSpec) {
     }
   }
 
+  // --- the stage-2 abort flag ------------------------------------------
+  //
+  // The overlapped stage-1 gcd raises this to say it already has a factor,
+  // which makes the rest of the walk pointless. What has to hold is that the
+  // walk actually STOPS, and that stopping this way is reported as
+  // `abandoned` and NOT as `interrupted` -- the caller treats those
+  // oppositely (one ends the job on stage 1's factor, the other says "resume
+  // me later"), so conflating them would either lose a find or invent a
+  // phantom interrupt in an unattended log.
+  {
+    printf("\n  E. stage 2 stops when the overlapped stage-1 gcd raises abortIf\n");
+    const u32 p = 4444091;
+    Config cfg;
+    cfg.exponent = p;
+    cfg.fftSpec = fftSpec;
+    cfg.reportEvery = 1;      // check the flag at every opportunity
+    cfg.checkpoint = false;   // hermetic: leave no save files behind
+
+    FFTConfig fft = smallestFFT(p, fftSpec);
+    auto gpu = Gpu::make(q, p, shared, fft, {}, false);
+    PM1Result r1 = runPM1Stage1(*gpu, cfg, 1000, false, /*doGcd=*/false);
+
+    // Raised BEFORE the call, so the abort must be taken at the first check
+    // -- inside the T_j table build, before a single slot is walked.
+    std::atomic<bool> abortNow{true};
+    Timer tAbort;
+    PM1Stage2Result aborted =
+        runPM1Stage2(*gpu, cfg, r1.residue, 1000, 3000000, 210, 1, false, &abortNow);
+    const double abortSecs = tAbort.at();
+
+    check(aborted.abandoned, "an aborted stage 2 reports abandoned");
+    check(!aborted.interrupted, "an aborted stage 2 is NOT reported as interrupted");
+    check(!aborted.foundFactor, "an aborted stage 2 claims no factor");
+    printf("     %s  abortIf set up front: abandoned=%d interrupted=%d (%s)\n",
+           (aborted.abandoned && !aborted.interrupted) ? "PASS" : "FAIL",
+           int(aborted.abandoned), int(aborted.interrupted),
+           fmtDuration(abortSecs).c_str());
+
+    // The same bounds with the flag DOWN must walk normally, which is what
+    // makes the timing above mean something: B2=3e6 against B1=1000 is a
+    // walk no abort-free run could finish in the time the aborted one took.
+    std::atomic<bool> never{false};
+    Timer tFull;
+    PM1Stage2Result full =
+        runPM1Stage2(*gpu, cfg, r1.residue, 1000, 3000000, 210, 1, false, &never);
+    const double fullSecs = tFull.at();
+
+    check(!full.abandoned, "a clear flag does not abandon");
+    check(!full.interrupted, "a clear flag does not interrupt");
+    const bool faster = abortSecs < fullSecs;
+    check(faster, "aborting is faster than walking");
+    printf("     %s  flag clear: walks in %s vs %s aborted -- %.0fx\n",
+           (!full.abandoned && !full.interrupted && faster) ? "PASS" : "FAIL",
+           fmtDuration(fullSecs).c_str(), fmtDuration(abortSecs).c_str(),
+           abortSecs > 0 ? fullSecs / abortSecs : 0.0);
+  }
+
   printf("\nM6b: %d failed.\n\n", failures - before);
   return failures == before ? 0 : 1;
 }

@@ -120,8 +120,9 @@ Mp_p-1_gpu.exe --selftest
 Mp_p-1_gpu.exe
 ```
 
-Add an exponent to `worktodo.txt` (one per line) and edit `config.txt` to say
-how to work it; every setting is documented inline.
+Add an exponent to `worktodo.txt` (one per line — it ships empty) and edit
+`config.txt` to say how to work it; every setting is documented inline, and
+`worktodo_instructions.txt` covers the queue's own line formats.
 
 [MANUAL.md](MANUAL.md) is the manual: `config.txt` keys, the
 worktodo queue, the command line, reading the output, results format,
