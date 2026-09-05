@@ -129,10 +129,41 @@ bool parseKnownFactors(const string& field, u32 exponent, vector<string>& out, s
   return !out.empty();
 }
 
-// Strips a leading 32-hex-char assignment ID (immediately followed by ',')
-// from `value` if present -- generic to ANY worktodo keyword in Prime95, not
-// specific to Pfactor=/Pminus1=. Ported verbatim from commonc.c's own loop.
+// Strips a leading assignment ID (immediately followed by ',') from `value`
+// if present -- generic to ANY worktodo keyword in Prime95, not specific to
+// Pfactor=/Pminus1=. The 32-hex-char form is ported from commonc.c's own loop.
+//
+// Two more spellings mean "no assignment ID", and both come from AutoPrimeNet
+// rather than from Prime95. Its own worktodo regexes accept the field as
+//
+//     (?:([0-9A-F]{32}|[Nn]/[Aa]|0),)?
+//
+// and `output_assignment` WRITES "N/A" whenever registering the assignment
+// with PrimeNet failed:
+//
+//     if assignment.uid:      temp.append(assignment.uid)
+//     elif assignment.ra_failed:  temp.append("N/A")
+//
+// That is the normal case for a Pplus1= line, because PrimeNet has no work
+// type for P+1 at all, so there is nothing to register. Refusing "N/A" meant
+// refusing a queue AutoPrimeNet had just written -- the whole run would stop
+// on `malformed k,b,n,c`, naming the wrong field, for a line that is correct.
+//
+// Neither spelling is an ID, so both return "" and nothing is echoed into
+// results.txt: an aid of "N/A" would be a claim about an assignment that
+// does not exist.
 string stripAid(string& value) {
+  // "N/A" in any case, and a bare "0", both meaning "no assignment ID".
+  auto skipPlaceholder = [&value](const char* lit, size_t n) {
+    if (value.size() <= n || value[n] != ',') { return false; }
+    for (size_t j = 0; j < n; ++j) {
+      if (toupper((unsigned char) value[j]) != toupper((unsigned char) lit[j])) { return false; }
+    }
+    value = value.substr(n + 1);
+    return true;
+  };
+  if (skipPlaceholder("N/A", 3) || skipPlaceholder("0", 1)) { return ""; }
+
   size_t i = 0;
   for (; i < value.size(); ++i) {
     const char c = value[i];
@@ -793,6 +824,51 @@ int runWorktodoTests() {
     const bool ok = ok32 && rejected31;
     if (!ok) { ++fails; printf("  FAIL AID boundary: ok32=%d rejected31=%d err='%s'\n", ok32, rejected31, err.c_str()); }
     printf("     %s  32 hex chars + comma strips as AID, 31 does not\n", ok ? "PASS" : "FAIL");
+  }
+
+  printf("\n  H2. AutoPrimeNet's placeholder AIDs: N/A in any case, and 0\n");
+  {
+    // AutoPrimeNet writes "N/A" into the AID slot whenever registering the
+    // assignment with PrimeNet failed -- the normal case for Pplus1=, since
+    // PrimeNet has no work type for P+1 to register. Its own worktodo regexes
+    // spell the field  (?:([0-9A-F]{32}|[Nn]/[Aa]|0),)?  so a bare 0 means the
+    // same thing. Refusing either meant refusing a queue AutoPrimeNet had just
+    // written, and refusing it with "malformed k,b,n,c", which names the wrong
+    // field entirely.
+    struct Case { const char* line; bool accept; const char* what; };
+    static const Case CASES[] = {
+      {"Pminus1=N/A,1,2,86243,-1,50000,3000000",  true,  "N/A upper"},
+      {"Pminus1=n/a,1,2,86243,-1,50000,3000000",  true,  "n/a lower"},
+      {"Pminus1=N/a,1,2,86243,-1,50000,3000000",  true,  "N/a mixed"},
+      {"Pplus1=N/A,1,2,86243,-1,50000,3000000,1", true,  "N/A on Pplus1="},
+      {"Pfactor=N/A,1,2,86243,-1,70,2",           true,  "N/A on Pfactor="},
+      {"Pminus1=0,1,2,86243,-1,50000,3000000",    true,  "bare 0"},
+      {"Pminus1=1,2,86243,-1,50000,3000000",      true,  "no AID field at all"},
+      // Must still parse as a real AID, not be eaten by the 0 placeholder.
+      {"Pminus1=0ABBCCDD00112233445566778899AABB,1,2,86243,-1,50000,3000000", true, "32-hex AID starting 0"},
+      // Near misses: neither is a placeholder, so the AID strip must not fire.
+      {"Pminus1=N/B,1,2,86243,-1,50000,3000000",  false, "N/B is not a placeholder"},
+      {"Pminus1=N/A1,2,86243,-1,50000,3000000",   false, "N/A without its comma"},
+    };
+    bool allOk = true;
+    for (const Case& c : CASES) {
+      writeRaw(TEST_FILE, (string(c.line) + "\n").c_str());
+      vector<WorktodoEntry> out; string err;
+      const bool got = loadWorktodo(TEST_FILE, out, err) && out.size() == 1;
+      // A placeholder is NOT an ID: it must leave aid empty, or results.txt
+      // would carry "aid":"N/A" -- a claim about an assignment that does not
+      // exist. Only the real 32-hex case may set it.
+      const bool aidOk = !got || out[0].aid.empty() || out[0].aid.size() == 32;
+      if (got != c.accept || !aidOk) {
+        allOk = false;
+        printf("  FAIL %s: %s (aid='%s') %s\n", c.what,
+               got ? "accepted" : "refused", got ? out[0].aid.c_str() : "",
+               got ? "" : err.c_str());
+      }
+    }
+    if (!allOk) { ++fails; }
+    printf("     %s  N/A (any case) and 0 parse as \"no AID\"; near misses still refused\n",
+           allOk ? "PASS" : "FAIL");
   }
 
   printf("\n  I. rejected shapes: wrong k/b/c, malformed known-factors\n");

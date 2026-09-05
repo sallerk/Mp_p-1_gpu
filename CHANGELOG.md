@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.9.7
+
+**`worktodo.txt` accepts AutoPrimeNet's placeholder assignment IDs. Without
+this, a queue AutoPrimeNet had just written could not be read back.**
+
+AutoPrimeNet writes `N/A` into the assignment-ID slot whenever registering the
+assignment with PrimeNet failed. From `output_assignment`:
+
+```python
+if assignment.uid:          temp.append(assignment.uid)
+elif assignment.ra_failed:  temp.append("N/A")
+```
+
+That is the normal case for a `Pplus1=` line, not an edge case: PrimeNet has no
+work type for P+1 at all, so there is nothing to register and the field is
+always the placeholder. Its own worktodo regexes spell the slot
+
+```
+(?:([0-9A-F]{32}|[Nn]/[Aa]|0),)?
+```
+
+so a bare `0` means the same thing. This program accepted only the 32-hex form.
+Both other spellings were refused -- and refused as `malformed k,b,n,c`, which
+names the wrong field entirely, for a line that is correct. The first P+1
+assignment AutoPrimeNet wrote would have stopped the whole queue.
+
+`stripAid` now takes all three forms. Neither placeholder is an assignment ID,
+so both leave `aid` empty and nothing is echoed into `results.txt`: an
+`"aid":"N/A"` would be a claim about an assignment that does not exist. A real
+32-hex ID that happens to begin with `0` still parses as an ID, and the near
+misses (`N/B`, or `N/A` without its comma) are still refused.
+
+New `--selftest=worktodo` section H2 covers ten spellings across all three
+keywords, including those near misses and the leading-zero ID. The acceptance
+matrix gains three accept cases and two refusals, and `genmatrix.py`'s
+`split_fields` had to learn the placeholders too -- it drops a leading
+assignment ID before walking the fields positionally, so with `N/A` sitting
+there every slot shifted by one and the harness predicted the wrong
+`factored_to` and `bias` while the program was right.
+
+### verified against AutoPrimeNet itself
+
+Checked against the dev branch (`tdulcet/AutoPrimeNet`), offline, with both
+PrimeNet URLs redirected to a local sink so nothing could leave the machine.
+
+That branch already lists `Mp_p-1_gpu` among the programs it handles, and its
+`RESULT_PATTERN` matches `"Mp_p-1_gpu"`, so results are picked up for
+submission. Running its own `parse_result` over the ten documented result
+shapes: all ten parse, with the right PrimeNet codes (`P1_FACTOR`,
+`P1_NOFACTOR`, `PP1_FACTOR`, `PP1_NOFACTOR`) and the assignment IDs carried
+through. The absent `security-code` is read with a default, so omitting it does
+not block a submission.
+
+End to end, it then reads a three-line queue (`Pfactor=` with an ID, `Pminus1=`
+with an ID, `Pplus1=` with `N/A`), this program works all three, and
+AutoPrimeNet formats each result for PrimeNet -- the P+1 line correctly without
+an `aid`.
+
+One constraint found while testing, which is AutoPrimeNet's rule rather than
+this program's: it refuses any P-1/P+1/ECM worktodo line with **B1 below
+50000**. This program has no such floor, so a hand-written P+1 assignment below
+it will be dropped from the queue before this program ever sees it.
+
 ## 1.9.6
 
 **Stage 2 stops the moment the overlapped stage-1 gcd finds a factor, instead

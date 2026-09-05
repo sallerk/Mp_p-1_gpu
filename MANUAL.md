@@ -237,6 +237,24 @@ It is optional on every shape, and echoed back into `results.txt` as `"aid"`
 (see **Results**, below) so AutoPrimeNet's upload step can match the result to
 the assignment that produced it.
 
+Two other spellings occupy that slot and mean **no assignment ID**: `N/A` in any
+case, and a bare `0`. Both come from AutoPrimeNet rather than Prime95 — it
+writes `N/A` whenever registering the assignment with PrimeNet failed, which is
+the normal case for a `Pplus1=` line, since PrimeNet has no work type for P+1 to
+register at all. Its own worktodo regexes spell the field
+
+```
+(?:([0-9A-F]{32}|[Nn]/[Aa]|0),)?
+```
+
+Neither placeholder is an ID, so neither reaches `results.txt`: an
+`"aid":"N/A"` would be a claim about an assignment that does not exist.
+
+One limit worth knowing when hand-writing `Pplus1=` lines, which is
+AutoPrimeNet's rule and not this program's: it refuses any P-1/P+1/ECM worktodo
+line with **B1 below 50000**, and drops it from the queue before this program
+sees it. This program itself has no such floor.
+
 ### B2 = 0: stage 1 alone
 
 Set `B2` to 0, or to anything at or below `B1`, and stage 1 runs alone:

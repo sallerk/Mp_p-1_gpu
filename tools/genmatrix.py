@@ -85,8 +85,17 @@ def split_fields(line):
         elif c == "," and not inq: out.append(cur); cur = ""
         else:             cur += c
     out.append(cur)
-    # a 32-hex-char first field followed by more is an AID, not k
-    if len(out) > 1 and len(out[0]) == 32 and all(c in "0123456789abcdefABCDEF" for c in out[0]):
+    # An AID occupies the first field, so it has to be dropped before the
+    # positional walk below -- otherwise every slot is off by one and the
+    # EXPECTATIONS come out wrong while the program is right. Three spellings,
+    # matching AutoPrimeNet's own regex  (?:([0-9A-F]{32}|[Nn]/[Aa]|0),)?
+    # k is always 1 on a valid line, so a leading "0" can only be the
+    # placeholder and never a real k.
+    if len(out) > 1 and (
+        (len(out[0]) == 32 and all(c in "0123456789abcdefABCDEF" for c in out[0]))
+        or out[0].upper() == "N/A"
+        or out[0] == "0"
+    ):
         out = out[1:]
     return out
 
@@ -159,6 +168,13 @@ def build_accept():
     case(f"Pfactor=1,2,{E},-1,74.5,2", "fractional how_far_factored, floors to 74", b1=CFG_B1, b2=CFG_B2, ft=74)
     case(f"Pfactor=1,2,{E},-1,70,100", "tests_saved at its maximum, 100",           b1=CFG_B1, b2=CFG_B2, ft=70, bias=100.0)
     case(f"Pfactor={AID},1,2,{E},-1,70,2", "AID present",                           b1=CFG_B1, b2=CFG_B2, aid=True)
+    # AutoPrimeNet writes "N/A" into the AID slot when registering the
+    # assignment with PrimeNet failed, and its own regexes also accept a bare
+    # 0 there:  (?:([0-9A-F]{32}|[Nn]/[Aa]|0),)?  Neither is an ID, so neither
+    # may reach results.txt as one -- aid=False on all three.
+    case(f"Pfactor=N/A,1,2,{E},-1,70,2", "AutoPrimeNet placeholder AID N/A",     b1=CFG_B1, b2=CFG_B2, aid=False)
+    case(f"Pfactor=n/a,1,2,{E},-1,70,2", "placeholder AID, lower case",          b1=CFG_B1, b2=CFG_B2, aid=False)
+    case(f"Pfactor=0,1,2,{E},-1,70,2",   "placeholder AID, bare 0",              b1=CFG_B1, b2=CFG_B2, aid=False)
     case(f'Pfactor=1,2,{E},-1,70,2,"{KALL}"', "every reachable factor already known -> NF", b1=CFG_B1, b2=CFG_B2, known=KALL.split(","))
     case(f'Pfactor={AID},1,2,{E},-1,70,2,"{F1}"', "AID + one known factor",         b1=CFG_B1, b2=CFG_B2, known=[F1], aid=True)
 
@@ -323,6 +339,8 @@ REJECT = [
     ("too few fields entirely",       f"Pminus1=1,2,{E}"),
     ("unsupported keyword",           f"PRP=1,2,{E},-1"),
     ("AID of 33 hex chars",           f"Pminus1={AID}A,1,2,{E},-1,200,2000"),
+    ("AID N/B is not a placeholder",  f"Pminus1=N/B,1,2,{E},-1,200,2000"),
+    ("AID N/A without its comma",     f"Pminus1=N/A1,2,{E},-1,200,2000"),
     ("AID with a non-hex character",  f"Pminus1={AID[:-1]}Z,1,2,{E},-1,200,2000"),
 ]
 
