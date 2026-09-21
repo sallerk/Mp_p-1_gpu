@@ -294,9 +294,12 @@ void dropKnownFactors(const Config& cfg, Result& res) {
 void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
                    u64 b1, u64 b2, const char* worktype, const Pp1Start* start,
                    u32 stage2D) {
+  // `factors` is what is left after dropKnownFactors, so the count is of NEW
+  // factors, not of the gcd's primes -- and nothing here may assume a stage or
+  // a method: a stage-2 k is not B1-smooth, and P+1 depends on q+-1, not k.
   if (factors.size() > 1) {
-    log("  the gcd was a product of %zu factors (every factor with a\n"
-        "  B1-smooth k comes out of the same gcd):\n\n", factors.size());
+    log("  %zu new factors from this gcd -- one gcd returns every factor the\n"
+        "  bounds reach, not just the first:\n\n", factors.size());
   }
   for (const FoundFactor& ff : factors) {
     if (ff.prime && ff.dividesMp) {

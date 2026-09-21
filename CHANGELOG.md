@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.9.8
+
+**The "several factors" console line no longer misstates what came out of the
+gcd.** When a gcd yields more than one new factor, the console and log said
+
+```
+  the gcd was a product of 2 factors (every factor with a
+  B1-smooth k comes out of the same gcd):
+```
+
+Both halves could be false. The count is taken *after* known factors are
+dropped, so on M15000457 with two known factors the stage-2 gcd split into four
+primes (`splitting the gcd (177 bits) into prime factors ... 4 found`) and the
+next line called it a product of two. And the parenthetical only holds for a
+P-1 stage-1 gcd: the two stage-2 finds in that run have k = 2^3 * 116731 and
+k = 3^3 * 5 * 1078789, neither B1-smooth, and for P+1 what matters is whether
+q-1 or q+1 is smooth, not k. The line now reads
+
+```
+  2 new factors from this gcd -- one gcd returns every factor the
+  bounds reach, not just the first:
+```
+
+which is true for both methods, both stages, and with or without known
+factors. Console and log text only; `results.txt` is unchanged.
+
+Checked on a real four-job run: P-1 stage 1 on M1000273 (`3 new factors`),
+P+1 stage 1 on M1000763 (`2 new factors`), a single-factor P+1 job (no line,
+as before), and P-1 stage 2 on M15000457 with its two known factors, where
+`4 found` is now followed by `2 new factors`. `--selftest` gcd, exponent,
+stage2plan, bounds, worktodo and results all pass.
+
+### correction to 1.9.7: AutoPrimeNet does not drop a B1 < 50000 line
+
+1.9.7's entry and MANUAL.md said AutoPrimeNet drops a P-1/P+1/ECM line with B1
+below 50000 from the queue before this program sees it. It does not.
+`read_workfile` logs `Bad line` and yields the raw text instead of an
+`Assignment`, and `write_workfile` writes non-`Assignment` entries back
+verbatim, so the line stays in `worktodo.txt`, this program works it, and
+AutoPrimeNet submits the result with no assignment ID (`k=0`). What the flag
+does change: the line is never registered with PrimeNet and does not count
+towards `--num-cache`.
+
+Seen end to end in an offline production run of the dev branch (PrimeNet
+redirected to a local stub) on `Pplus1=1,2,1000003,-1,1000,5000,1`: flagged at
+every read, still queued after AutoPrimeNet's pass, worked as NF (`b1` 1000,
+`b2` 5000), and submitted as `PP1_NOFACTOR`. MANUAL.md and the 1.9.7 entry are
+corrected.
+
 ## 1.9.7
 
 **`worktodo.txt` accepts AutoPrimeNet's placeholder assignment IDs. Without
@@ -59,9 +108,10 @@ AutoPrimeNet formats each result for PrimeNet -- the P+1 line correctly without
 an `aid`.
 
 One constraint found while testing, which is AutoPrimeNet's rule rather than
-this program's: it refuses any P-1/P+1/ECM worktodo line with **B1 below
-50000**. This program has no such floor, so a hand-written P+1 assignment below
-it will be dropped from the queue before this program ever sees it.
+this program's: it flags any P-1/P+1/ECM worktodo line with **B1 below
+50000** as a bad line. This program has no such floor. *(Corrected in 1.9.8:
+this entry originally said such a line is dropped from the queue before this
+program sees it. It is not.)*
 
 ## 1.9.6
 

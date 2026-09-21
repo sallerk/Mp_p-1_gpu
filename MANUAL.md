@@ -251,9 +251,12 @@ Neither placeholder is an ID, so neither reaches `results.txt`: an
 `"aid":"N/A"` would be a claim about an assignment that does not exist.
 
 One limit worth knowing when hand-writing `Pplus1=` lines, which is
-AutoPrimeNet's rule and not this program's: it refuses any P-1/P+1/ECM worktodo
-line with **B1 below 50000**, and drops it from the queue before this program
-sees it. This program itself has no such floor.
+AutoPrimeNet's rule and not this program's: it flags any P-1/P+1/ECM worktodo
+line with **B1 below 50000** as a bad line — but does not remove it. The line
+stays in `worktodo.txt` exactly as written, so this program still works it and
+AutoPrimeNet still submits the result, with no assignment ID. What the flag
+does cost: the line is never registered with PrimeNet, and it does not count
+towards AutoPrimeNet's `--num-cache`. This program itself has no such floor.
 
 ### B2 = 0: stage 1 alone
 

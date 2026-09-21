@@ -37,6 +37,10 @@ kernel-cache/
 proof/
 proof-tmp/
 
+# Local vcpkg holding static GMP for the gcd step. build.bat looks for it here
+# (after VCPKG_ROOT), so a build needs no environment setup.
+vcpkg/
+
 # Local tooling config. Also covers .claude/worktrees, which can hold whole
 # checkouts of this repo.
 .claude/
