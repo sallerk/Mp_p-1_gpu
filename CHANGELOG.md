@@ -68,6 +68,14 @@ returned normally with the job not done:
 Each now reports the interruption and leaves the line queued. Stage 1 is
 checkpointed as complete, so the rerun repeats only the gcd.
 
+**Known limitation.** A job that writes several result lines -- P+1 with more
+than one run, or `method = both` -- is redone from the start when resumed,
+quickly, from its checkpoints. So the rerun writes the lines for the runs it
+had already finished a second time, and AutoPrimeNet submits them twice. That
+already happened in 1.9.9 when such a job was interrupted during a later run.
+The change here is only that Ctrl-C between runs now leads to the same thing,
+where 1.9.9 dropped the remaining runs and removed the line.
+
 A result that could not be written -- a full disk shows up only when the file
 is closed -- was also reported as appended, and its line removed. Now the job
 stops with an error and the line stays.
