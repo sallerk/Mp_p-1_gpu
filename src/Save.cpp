@@ -87,7 +87,7 @@ bool saveState(const string& path, const SaveState& s, string& err) {
 }
 
 bool loadState(const string& path, const SaveState& want, SaveState& out,
-               string& err) {
+               string& err, bool acceptPartialExtension) {
   FILE* f = fopen(path.c_str(), "rb");
   if (!f) { err = "no checkpoint"; return false; }
 
@@ -113,6 +113,13 @@ bool loadState(const string& path, const SaveState& want, SaveState& out,
     return false;
   }
   if (h.eBits != want.eBits) { fclose(f); err = "exponent bit length differs -- E rebuilt differently"; return false; }
+  // Its nextBit counts R's bits, not E's: resumed as a plain stage 1 it would
+  // continue E's ladder from the wrong residue and nothing would notice.
+  if (!h.complete && h.baseB1 && !acceptPartialExtension) {
+    fclose(f);
+    err = "an interrupted extension from B1=" + to_string(h.baseB1);
+    return false;
+  }
 
   Words residue(h.nWords);
   if (h.nWords && fread(residue.data(), sizeof(u32), h.nWords, f) != h.nWords) {

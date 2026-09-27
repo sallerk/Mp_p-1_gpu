@@ -28,9 +28,12 @@
 #include <string>
 #include <vector>
 
+class FileLock;
+
 struct WorktodoEntry {
   u32 exponent = 0;
   u32 lineNo = 0;   // physical line in the file, used to remove exactly this entry
+  std::string line; // its text, trimmed -- for messages that ask a person to act on it
 
   // Which method this entry demands. A Pminus1=/Pplus1= line names one, and
   // then ONLY that one runs, whatever config.txt's `method` says -- the
@@ -81,8 +84,13 @@ struct WorktodoEntry {
 // philosophy as loadConfig: a typo (or an unsupported worktodo keyword, e.g.
 // PRP= -- this program only factors) should stop the run, not silently
 // vanish from the queue.
+//
+// Both functions below hold path + ".lck" while they touch the file (see
+// FileLock.h), as AutoPrimeNet does whenever it edits it. If Ctrl-C ends the
+// wait for that lock they return false with *interrupted set, having done
+// nothing.
 bool loadWorktodo(const std::string& path, std::vector<WorktodoEntry>& out,
-                  std::string& err);
+                  std::string& err, bool* interrupted = nullptr);
 
 // Removes exactly this entry's line, atomically (temp file + rename). Before
 // removing, re-reads that physical line and confirms it still parses to the
@@ -90,9 +98,11 @@ bool loadWorktodo(const std::string& path, std::vector<WorktodoEntry>& out,
 // guards against the file having been hand-edited, or reissued by
 // AutoPrimeNet under a new assignment, between load and consume. On any
 // mismatch or I/O failure, returns false with err set and the file is left
-// untouched.
+// untouched. `alreadyHeld`, if it holds path's lock, is used instead of
+// taking it again.
 bool consumeWorktodoEntry(const std::string& path, const WorktodoEntry& entry,
-                          std::string& err);
+                          std::string& err, bool* interrupted = nullptr,
+                          const FileLock* alreadyHeld = nullptr);
 
 // Which B1/B2 a queued entry actually runs at: the entry's own assigned
 // bounds (Pminus1=) whenever it has them, else whatever config.txt says

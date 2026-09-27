@@ -350,22 +350,78 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
   u64 resumeBit = 0;
   bool alreadyComplete = false;
 
+  // B1 extension state, filled either by resuming an interrupted extension
+  // (just below) or by the search further down: the completed smaller-B1
+  // residue it starts from, and R = E(b1)/E(extendFrom).
+  Words extBase;
+  u64 extendFrom = 0;
+  Nat R;
+  const Words* extResumeFrom = nullptr;
+  u64 extResumeBit = 0;
+
   if (cfg.checkpoint) {
     string err;
-    if (loadState(savePath, want, loaded, err)) {
+    if (loadState(savePath, want, loaded, err, /*acceptPartialExtension=*/true)) {
       if (loaded.complete) {
         alreadyComplete = true;
+        res.path = Stage1Path::AlreadyComplete;
         printf("  [%s stage 1 GPU] already complete in %s -- skipping to the gcd\n", ph(2),
                savePath.c_str());
+      } else if (!loaded.baseB1) {
+        if (loaded.nextBit + 1 >= want.eBits) {
+          // powBase3 asserts on this. A corrupt bit index should cost the
+          // checkpoint, not the run.
+          printf("  [%s stage 1 GPU] ignoring checkpoint: bit %llu is past the end of E\n", ph(2),
+                 (unsigned long long) loaded.nextBit);
+        } else {
+          resumeFrom = &loaded.residue;
+          resumeBit = loaded.nextBit;
+          res.path = Stage1Path::Resumed;
+          // So the rate/ETA reflect only what this run computes.
+          doneAtStart = (E.bits() - 1) - loaded.nextBit;
+          const double pct = 100.0 * double(want.eBits - 1 - resumeBit) / double(want.eBits - 1);
+          printf("  [%s stage 1 GPU] resuming from %s at %.2f%% (bit %llu of %llu)\n", ph(2),
+                 savePath.c_str(), pct,
+                 (unsigned long long) resumeBit, (unsigned long long) (want.eBits - 1));
+        }
       } else {
-        resumeFrom = &loaded.residue;
-        resumeBit = loaded.nextBit;
-        // So the rate/ETA reflect only what this run computes.
-        doneAtStart = (E.bits() - 1) - loaded.nextBit;
-        const double pct = 100.0 * double(want.eBits - 1 - resumeBit) / double(want.eBits - 1);
-        printf("  [%s stage 1 GPU] resuming from %s at %.2f%% (bit %llu of %llu)\n", ph(2),
-               savePath.c_str(), pct,
-               (unsigned long long) resumeBit, (unsigned long long) (want.eBits - 1));
+        // An interrupted EXTENSION: a point on R's ladder, not E's. It can
+        // only continue from the very residue it started from. Otherwise drop
+        // it and let the normal path (the search below, or from scratch) take
+        // over; the first periodic save then overwrites it.
+        const u64 base = loaded.baseB1;
+        string why;
+        if (!cfg.extend) {
+          why = "extend = 0";
+        } else if (base >= b1) {
+          why = "B1=" + to_string(base) + " is not below this B1";
+        } else {
+          SaveState w2 = want;
+          w2.b1 = base;
+          w2.eBits = stage1Exponent(base, cfg.exponent).bits();
+          SaveState got;
+          string baseErr;
+          const string baseFile = defaultSavePath(cfg.exponent, base);
+          if (!loadState(baseFile, w2, got, baseErr) || !got.complete) {
+            why = baseErr == "no checkpoint" ? baseFile + " is missing"
+                : baseErr.empty()            ? baseFile + " is not complete"
+                                             : baseFile + ": " + baseErr;
+          } else {
+            R = stage1ExponentDelta(base, b1, cfg.exponent);
+            if (loaded.nextBit + 1 >= R.bits()) {
+              why = "bit " + to_string(loaded.nextBit) + " is past the end of R";
+            } else {
+              extBase = std::move(got.residue);
+              extendFrom = base;
+              extResumeFrom = &loaded.residue;
+              extResumeBit = loaded.nextBit;
+            }
+          }
+        }
+        if (!why.empty()) {
+          printf("  [%s stage 1 GPU] ignoring %s: an interrupted extension from B1=%llu, but %s\n",
+                 ph(2), savePath.c_str(), (unsigned long long) base, why.c_str());
+        }
       }
     } else if (err != "no checkpoint") {
       // Anything other than "absent" means a file exists but cannot be trusted.
@@ -401,9 +457,7 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
   // If a SMALLER B1 already completed for this exponent, E(oldB1) divides
   // E(b1), so x_new = x_old ^ (E(b1)/E(oldB1)) -- only the new work is done.
   // The saving is exactly oldB1/b1.
-  Words extBase;
-  u64 extendFrom = 0;
-  if (cfg.checkpoint && !alreadyComplete && !resumeFrom && cfg.extend) {
+  if (cfg.checkpoint && !alreadyComplete && !resumeFrom && !extendFrom && cfg.extend) {
     for (u64 cand : findCompletedB1(cfg.exponent, b1)) {
       SaveState w2 = want;
       w2.b1 = cand;
@@ -422,11 +476,25 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
   if (alreadyComplete) {
     x = loaded.residue;
     res.squarings = 0;
+  } else if (extResumeFrom) {
+    // R was built while the checkpoint was validated above.
+    const u64 total = R.bits() - 1;
+    doneAtStart = total - extResumeBit;
+    res.path = Stage1Path::ResumedExtension;
+    printf("  [%s stage 1 GPU] resuming the B1=%llu -> %llu extension from %s at %.2f%%"
+           " (bit %llu of %llu)\n", ph(2),
+           (unsigned long long) extendFrom, (unsigned long long) b1, savePath.c_str(),
+           100.0 * double(doneAtStart) / double(total),
+           (unsigned long long) extResumeBit, (unsigned long long) total);
+    want.baseB1 = extendFrom;
+    x = gpu.powResidue(extBase, R.toVector(), cfg.reportEvery, progress,
+                       extResumeFrom, extResumeBit, saveEverySquarings, saveFn);
+    res.squarings = total;
   } else if (extendFrom) {
     printf("  [%s stage 1 GPU] extending the completed B1=%llu result to B1=%llu\n", ph(2),
            (unsigned long long) extendFrom, (unsigned long long) b1);
     Timer rTimer;
-    const Nat R = stage1ExponentDelta(extendFrom, b1, cfg.exponent);
+    R = stage1ExponentDelta(extendFrom, b1, cfg.exponent);
     printf("  [%s exponent CPU] R = E(%llu)/E(%llu) is %zu bits, vs %zu from scratch"
            " -- %.0f%% saved (%s)\n",
            ph(1), (unsigned long long) b1, (unsigned long long) extendFrom,
@@ -434,6 +502,7 @@ PM1Result runPM1Stage1(Gpu& gpu, const Config& cfg, u64 b1, bool showProgress,
            100.0 * (1.0 - double(R.bits()) / double(E.bits())),
            fmtDuration(rTimer.at()).c_str());
 
+    res.path = Stage1Path::Extended;
     want.baseB1 = extendFrom;
     x = gpu.powResidue(extBase, R.toVector(), cfg.reportEvery, progress,
                        nullptr, 0, saveEverySquarings, saveFn);

@@ -32,10 +32,15 @@ struct SaveState {
   u32 exponent = 0;
   u64 b1 = 0;
   u64 eBits = 0;        // bit length of E; cross-checks that E rebuilt identically
-  u64 nextBit = 0;      // next bit index of E to process
+  // The bit the ladder last folded in: bits below it are still to do. Counted
+  // in E for a fresh stage 1, in R = E(b1)/E(baseB1) for an extension.
+  u64 nextBit = 0;
   // 0 means the ladder started from base 3 (a fresh stage 1). Non-zero means
-  // this is an EXTENSION whose base is the completed residue for that B1, so
-  // that file must still exist and validate before this one can be resumed.
+  // an EXTENSION of the completed residue for that B1. A PARTIAL file with
+  // this set is a point on R's ladder, not E's, and resuming it needs that
+  // base residue too -- so loadState refuses it unless the caller says it
+  // will resume it as an extension (runPM1Stage1 does, after checking that
+  // the base file still exists and validates).
   u64 baseB1 = 0;
   bool complete = false;  // stage 1 finished for this (exponent, b1)
   u32 base = 3;
@@ -55,6 +60,7 @@ std::string defaultSavePath(u32 exponent, u64 b1);
 bool saveState(const std::string& path, const SaveState& s, std::string& err);
 
 // Returns false (with a reason) if the file is missing, corrupt, or describes a
-// different job. `want` supplies the values that must match.
+// different job. `want` supplies the values that must match. A partial
+// extension (see baseB1) is refused unless acceptPartialExtension is set.
 bool loadState(const std::string& path, const SaveState& want, SaveState& out,
-               std::string& err);
+               std::string& err, bool acceptPartialExtension = false);

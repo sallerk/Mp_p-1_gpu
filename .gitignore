@@ -20,6 +20,7 @@ results.txt
 *.save
 *.save.tmp
 *.log
+*.lck
 
 # Local job description: exponent, bounds, device. config.txt is committed as a
 # documented template, so keep local edits out with a copy named config.local.txt

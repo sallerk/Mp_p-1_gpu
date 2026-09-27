@@ -1,5 +1,136 @@
 # Changelog
 
+## 1.9.10
+
+**Running alongside AutoPrimeNet can no longer lose an assignment, Ctrl-C can no
+longer drop or misreport a job, and an interrupted B1 extension now resumes
+correctly.** No arithmetic changed: residues and `results.txt` lines are
+identical to 1.9.9's apart from the version.
+
+### lock files, shared with AutoPrimeNet
+
+GIMPS programs that share `worktodo.txt` and `results.txt` (AutoPrimeNet,
+mfaktc, mfakto, CUDALucas) take a lock first: create `worktodo.txt.lck`
+exclusively, wait while someone else's exists, delete it when done. AutoPrimeNet's
+author confirmed the convention is meant for every GIMPS program. This one
+ignored it, and removing a finished job's line rewrote `worktodo.txt` -- read
+it, write a temporary copy, rename, and if the rename failed, delete
+`worktodo.txt` and rename again. An assignment AutoPrimeNet appended in between
+was lost, and after that delete there briefly was no `worktodo.txt` at all.
+This program's open handle could also make AutoPrimeNet's own rewrite fail.
+
+Now every read and change of `worktodo.txt`, and every append to `results.txt`,
+holds the file's lock:
+
+- The lock is created the conventional way, and held as an open handle with
+  delete-on-close. Windows removes it however this program ends (Ctrl-C,
+  closing the window, a crash), and nobody can delete it while it is held.
+  Checked against Python: AutoPrimeNet's `open(..., "x")` gets "file exists"
+  and waits, as it does for its own locks.
+- Waiting follows the convention -- for as long as the other program's lock
+  exists -- with a message after 2 s and a stale-lock hint after 60 s.
+- Ctrl-C while waiting: reading the queue stops, changing nothing; a finished
+  result is written anyway; removing a finished job's line leaves the line in
+  place and quotes it, since it has to be removed by hand.
+- A rename that fails (another program has `worktodo.txt` open) is retried
+  for up to 5 s. `worktodo.txt` is never deleted to make room.
+- A P-1 no-factor result and the removal of its line happen under one
+  worktodo lock. AutoPrimeNet marks such a result done only if the line is
+  already gone when it looks (1 s after `results.txt` changes). If it happened
+  to hold the lock just as a job finished, it could otherwise look in between.
+- `--selftest`, `--bench` and `--list-devices` no longer read the queue.
+
+To add work by hand while both programs run, put the lines in `worktodo.add`;
+AutoPrimeNet appends that file to `worktodo.txt` under the lock. See MANUAL.md,
+"Sharing the files with AutoPrimeNet".
+
+### Ctrl-C at the wrong moment dropped or misreported a job
+
+The queue removes a job's line when the job returns normally. Four paths
+returned normally with the job not done:
+
+- **P+1, between runs.** Ctrl-C after the FFT was chosen and before the first
+  run -- or between runs -- removed a P+1 line with runs never attempted.
+- **P+1, during stage 1's gcd.** The gcd runs to completion, then stage 2 was
+  skipped but the result was still written with `b2`: it claimed a stage 2
+  that never ran. In an old `Mp_p-1_gpu.log` this shows as `P+1 start X: no
+  factor` with no `no factor in stage 2 either` after it, while `results.txt`
+  has a `b2` for that start.
+- **P-1 with stage 2, at the end of stage 1.** Ctrl-C between the last
+  squaring and the start of the gcd skipped the gcd and stage 2, wrote
+  nothing, and removed the line. A moment later instead, it wrote a
+  stage-1-only result for a job that asked for stage 2. The test that decided
+  whether to start stage 2 also read the gcd thread's answer while that thread
+  was still writing it.
+- **Ctrl-C during a job's last gcd** let the job finish and then started the
+  next one, which stopped with `FAILED: stop requested`.
+
+Each now reports the interruption and leaves the line queued. Stage 1 is
+checkpointed as complete, so the rerun repeats only the gcd.
+
+A result that could not be written -- a full disk shows up only when the file
+is closed -- was also reported as appended, and its line removed. Now the job
+stops with an error and the line stays.
+
+### an interrupted B1 extension resumed as the wrong computation
+
+Raising B1 on an exponent with a completed smaller-B1 checkpoint extends it:
+`x_new = x_old ^ R` with `R = E(new)/E(old)`. The extension checkpoints like
+any stage 1, under the new B1's file name, but its position counts R's bits,
+not E's. A restart accepted that file as an ordinary partial stage 1 and
+carried on up E's ladder from it -- a wrong residue that nothing checks. No
+factor can come out of it, and its no-factor result was reported like any
+other. `Save.h` described the check that should have stopped this; it was
+never implemented.
+
+**Affected:** runs where B1 was raised on an existing completed checkpoint
+(`extend`, on by default), interrupted after at least one checkpoint of the
+extension (every 90 s by default), and then resumed. The log shows `extending
+the completed B1=...` and, after the restart, `resuming from
+pm1_<p>_b1_<B1>.save at X%`. That completed checkpoint holds the wrong residue
+and cannot be told apart from a good one. Delete it and redo the run, and
+treat its no-factor result as unreliable. Stage-2 checkpoints built on it are
+refused automatically once it is redone, because they are tied to the stage-1
+residue.
+
+Now such a file resumes as an extension, from the completed smaller-B1
+checkpoint it started from. If that checkpoint is missing or does not validate,
+if `extend = 0`, or if the saved position is impossible, the file is refused
+with the reason and stage 1 proceeds as it would without it. The extension's
+ladder also saves when interrupted now, as stage 1's always did; before, up to
+one checkpoint interval was lost. The file format is unchanged, so a 1.9.9
+partial extension file resumes correctly under 1.9.10.
+
+### verified
+
+The full `--selftest` passes, with new checks of the locks (another program's
+lock, Ctrl-C, an exception, a reader holding `worktodo.txt` open) and of
+interrupted-extension resumes; the extension checks fail on 1.9.9's code.
+Compiler warnings are unchanged from 1.9.9's. With the binary itself, each
+comparison against the released 1.9.9:
+
+- **AutoPrimeNet under load.** A harness running AutoPrimeNet 2.0.1's own lock
+  code appended assignments, rewrote `worktodo.txt` about nine times a second,
+  read it unlocked as AutoPrimeNet's status display does, and read
+  `results.txt` under its lock, while 63 jobs ran. Every line was worked once,
+  with exactly one result; nothing was lost and no partial line was ever read.
+  1.9.9 stopped after two jobs: `rename failed: Access is denied`.
+- **50 random endings** -- kills, Ctrl-C, closing the console window. No lock
+  file was left, the queue stayed intact, and no result was lost or cut short.
+- **Extensions.** One killed after its checkpoints, and one stopped by Ctrl-C,
+  each resumed to exactly the residue of an uninterrupted extension and of a
+  from-scratch run. 1.9.9 resumed the killed one to a wrong residue.
+- **Ctrl-C aimed at each window above**, plus random-time breaks: in 33 trials
+  1.9.10 never removed a line without its complete result, and every resumed
+  run finished correctly. 1.9.9 removed the line in all 6 P+1 trials -- in
+  both aimed at stage 1's gcd with a false `b2` -- and lost the result
+  outright in 2 of the 10 trials aimed at the end of P-1 stage 1. It also
+  started the next job after a Ctrl-C during the last gcd, and removed the
+  line of a job whose result it could not write.
+- **The offline AutoPrimeNet 2.0.1 production run** -- six P-1 and P+1 jobs,
+  every `results.txt` line and every submission to the stand-in PrimeNet
+  checked byte for byte -- passes 34 of 34, every result marked done.
+
 ## 1.9.9
 
 **Small exponents run about twice as fast, and the FFT search now measures the

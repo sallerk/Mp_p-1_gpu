@@ -124,6 +124,7 @@ set SRCS=^
  src\Bounds.cpp ^
  src\Config.cpp ^
  src\Worktodo.cpp ^
+ src\FileLock.cpp ^
  src\PM1.cpp ^
  src\Selftest.cpp ^
  src\Stage2Plan.cpp ^

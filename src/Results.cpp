@@ -2,7 +2,12 @@
 
 #include "Results.h"
 #include "Config.h"
+#include "FileLock.h"
 #include "PM1.h"
+#include "timeutil.h"
+
+#include <atomic>
+#include <thread>
 
 #include <cstdio>
 #include <cstdlib>
@@ -34,14 +39,25 @@
 // that product would be a composite masquerading as a factor. Anything that
 // could not be split is written with status "C" and is not a submittable
 // result -- it is recorded so the run is not silently lost.
-void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
+bool writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
                      const std::vector<FoundFactor>& factors, const Pp1Start* start,
                      u32 stage2D) {
+  // AutoPrimeNet reads results.txt under this lock. A finished result is
+  // never dropped for want of it: Ctrl-C while waiting writes it anyway
+  // (AutoPrimeNet never writes this file, and retries a line it could not
+  // parse).
+  FileLock::Options lockOpt;
+  lockOpt.onInterrupt = FileLock::OnInterrupt::Proceed;
+  FileLock lock(cfg.resultsFile, lockOpt);
+
   FILE* f = fopen(cfg.resultsFile.c_str(), "a");
   if (!f) {
     printf("  WARNING: could not append to %s\n", cfg.resultsFile.c_str());
-    return;
+    return false;
   }
+  // One write at fclose for all of this call's lines, so no reader --
+  // locked or not -- ever sees half of one.
+  setvbuf(f, nullptr, _IOFBF, 1 << 16);
 
   char stamp[32] = "";
   const time_t now = time(nullptr);
@@ -166,7 +182,11 @@ void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
     tail();
     fprintf(f, "}\n");
   }
-  fclose(f);
+  // A full disk surfaces here, not at fopen: fprintf only buffers.
+  bool ok = !ferror(f);
+  if (fclose(f) != 0) { ok = false; }
+  if (!ok) { printf("  WARNING: writing to %s failed\n", cfg.resultsFile.c_str()); }
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +426,66 @@ int runResultsTests() {
     if (!ok) { ++failures; }
     printf("     %s  P+1 carries start and no d; P-1 carries d and no start\n",
            ok ? "PASS" : "FAIL");
+  }
+
+  printf("\n  G. results.txt.lck is waited for, and never a reason to drop a result\n");
+  {
+    // This test's own stop flag and time limit, never gInterrupted: see the
+    // worktodo self-test's section T.
+    const std::string LCK = std::string(PATH) + ".lck";
+    remove(LCK.c_str());
+    std::atomic<bool> stop{false};
+    FileLock::Options o;
+    o.stop = &stop;
+    o.maxWaitSec = 5;
+    o.quietSec = 0.1;
+    o.graceSec = 0.2;
+    o.say = [](FileLock::Msg, const std::string&) {};
+    FileLock::TestDefaults testDefaults(o);
+    auto exists = [](const std::string& p) {
+      FILE* f = fopen(p.c_str(), "rb");
+      if (f) { fclose(f); }
+      return f != nullptr;
+    };
+    auto lineCount = [&] {
+      int n = 0;
+      if (FILE* f = fopen(PATH, "rb")) {
+        for (int c; (c = fgetc(f)) != EOF; ) { n += c == '\n'; }
+        fclose(f);
+      }
+      return n;
+    };
+    auto foreignLock = [&] { if (FILE* f = fopen(LCK.c_str(), "wb")) { fclose(f); } };
+
+    remove(PATH);
+    foreignLock();
+    std::atomic<bool> waitedForIt{false};
+    std::thread other([&] {
+      Timer::usleep(300'000);
+      waitedForIt = !exists(PATH);             // nothing written while it held the lock
+      remove(LCK.c_str());
+    });
+    Timer t;
+    const bool wrote = writeResultJson(base, "P-1", 1000, 1000, {}, nullptr, 0);
+    const double took = t.at();
+    other.join();
+    ++checks;
+    const bool ok1 = wrote && waitedForIt && took >= 0.25 && lineCount() == 1 && !exists(LCK);
+    if (!ok1) { ++failures; }
+    printf("     %s  another program's lock is waited out, then the line is appended\n",
+           ok1 ? "PASS" : "FAIL");
+
+    remove(PATH);
+    foreignLock();
+    stop = true;
+    const bool wrote2 = writeResultJson(base, "P-1", 1000, 1000, {}, nullptr, 0);
+    stop = false;
+    ++checks;
+    const bool ok2 = wrote2 && lineCount() == 1 && exists(LCK);
+    if (!ok2) { ++failures; }
+    printf("     %s  Ctrl-C while it is held: the line is written anyway, their lock left alone\n",
+           ok2 ? "PASS" : "FAIL");
+    remove(LCK.c_str());
   }
 
   remove(PATH);

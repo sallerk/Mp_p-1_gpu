@@ -121,6 +121,7 @@ touch:
 | key | meaning |
 |---|---|
 | `worktodo_file` | the exponent queue, one per line — `worktodo.txt` by default |
+| `results_file` | where result lines are appended — `results.txt` by default |
 | `factored_to` | trial-factoring depth already done, in bits. `auto` (default) is a flat 75; it cannot be 0, which the bounds model would read as "never trial factored" |
 | `b1`, `b2` | `auto`, or explicit bounds |
 | `stages` | `auto`, `both`, or `1` for stage 1 only |
@@ -257,6 +258,53 @@ stays in `worktodo.txt` exactly as written, so this program still works it and
 AutoPrimeNet still submits the result, with no assignment ID. What the flag
 does cost: the line is never registered with PrimeNet, and it does not count
 towards AutoPrimeNet's `--num-cache`. This program itself has no such floor.
+
+### Sharing the files with AutoPrimeNet: lock files
+
+Since 1.9.10 this program follows the lock-file convention GIMPS programs
+share (mfaktc, mfakto, CUDALucas, AutoPrimeNet): before it reads or changes
+`worktodo.txt`, or appends to `results.txt`, it creates `worktodo.txt.lck` or
+`results.txt.lck`, and while another program's lock file exists it waits.
+AutoPrimeNet takes the same locks whenever it edits the queue or reads the
+results. Tested with AutoPrimeNet 2.0.1. Before 1.9.10 the two could collide:
+removing a finished job's line rewrote `worktodo.txt`, and an assignment
+AutoPrimeNet appended at that moment was lost.
+
+What you may see:
+
+- `waiting for worktodo.txt.lck -- another program (AutoPrimeNet?) is using
+  worktodo.txt`, after two seconds of waiting. Locks are normally held for
+  milliseconds; AutoPrimeNet can hold one for longer while it talks to
+  PrimeNet.
+- After a minute, a hint that the lock may be stale. The convention has no
+  stale-lock detection, so a lock left by a program that died holding it stops
+  everyone until it is deleted. Delete it only if no other program is running
+  in the folder.
+
+This program's own lock cannot go stale: it is held open with delete-on-close,
+so Windows removes it however the program ends — Ctrl-C, closing the window, a
+crash — and nobody can delete it while it is held.
+
+Ctrl-C while waiting for a lock:
+
+- **reading the queue** — the program stops; nothing has changed.
+- **appending a finished result** — the result is written anyway. A finished
+  result is never dropped.
+- **removing a finished job's line** — the line stays, and the program quotes
+  it. Remove it by hand; otherwise the job is redone (cheaply, from its
+  checkpoints) and reported twice.
+
+**Adding work by hand while both programs run:** do not edit `worktodo.txt`
+directly — an edit can collide with either program's changes. Put the lines in
+`worktodo.add` instead. AutoPrimeNet appends that file to `worktodo.txt`, under
+the lock, when it starts and then every `--timeout` interval (an hour by
+default). Or stop both programs first. This program does not read
+`worktodo.add` itself.
+
+AutoPrimeNet cannot yet read this program's progress, so each hourly check-in
+reports "Finish cannot be estimated, using 7 days" and sends PrimeNet a
+completion date a week out. That is harmless: the job finishes long before any
+deadline.
 
 ### B2 = 0: stage 1 alone
 
@@ -657,6 +705,12 @@ correctness — every field that could make a residue mean something else is
 recorded and checked, so a file that does not match the job is refused, not
 adapted.
 
+An interrupted B1 extension resumes as an extension, from the smaller B1's
+completed checkpoint, so keep that file until the extension finishes. If it is
+gone, the partial file is refused and stage 1 starts over. Before 1.9.10 a
+restart continued an interrupted extension as an ordinary stage 1, from the
+wrong point, and got a wrong residue (see CHANGELOG, 1.9.10).
+
 ## P+1
 
 `method = pp1` (or `both`, to try P+1 then fall through to P-1) runs P+1
@@ -676,9 +730,10 @@ underlying multiply — see the comment above `choosePP1Bounds` in
 — a GPU-memory budget decision (one T-table sized for whichever method needs
 the smaller B1), not a cost-model gap. `stages` still switches stage 2 off
 for both methods at once. Checkpointing and
-interrupted-walk resume work the same way as P-1's, per seed:
-`pp1_<exponent>_b1_<B1>_s<seed>.save` (stage 1) and
-`pp1_<exponent>_s2_<B1>_<B2>_s<seed>.save` (stage 2). Raising B2 on a
+interrupted-walk resume work the same way as P-1's, per start:
+`pp1_<exponent>_b1_<B1>_n<num>d<den>.save` (stage 1, e.g. `_n2d7` for start
+2/7) and `pp1_<exponent>_s2_<B1>_<B2>_s<id>.save` (stage 2, where
+`id = num*256 + den`, so `s519` for 2/7). Raising B2 on a
 completed P+1 stage 2 does **not** yet reuse the earlier walk the way P-1's
 does — see Scope below.
 
@@ -824,7 +879,9 @@ Mp_p-1_gpu.exe --selftest
 GPU. `engine`,
 `pm1`, `pp1`, `extend`, `stage2`, `b2extend` and `pp1stage2` exercise the GPU
 against exact CPU arithmetic and against known factors of real Mersenne
-numbers.
+numbers. `worktodo` and `results` also check the lock files against
+another program's locks, Ctrl-C and exceptions, and `extend` checks that an
+interrupted extension resumes to the same residue as one that never stopped.
 
 `--selftest=results` is worth singling out. It checks the exact field set and
 field **order** of every line `results.txt` can hold, against Prime95's, and

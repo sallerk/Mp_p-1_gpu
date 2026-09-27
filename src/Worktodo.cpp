@@ -4,14 +4,26 @@
 #include "BigInt.h"
 #include "Config.h"
 #include "Bounds.h"
+#include "FileLock.h"
 #include "Stage2Plan.h"
+#include "timeutil.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <system_error>
+#include <thread>
+
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
 
 using namespace std;
 
@@ -536,7 +548,9 @@ bool parseWorktodoLine(const string& t, u32 lineNo, WorktodoEntry& out, string& 
 
 } // namespace
 
-bool loadWorktodo(const string& path, vector<WorktodoEntry>& out, string& err) {
+namespace {
+
+bool loadLocked(const string& path, vector<WorktodoEntry>& out, string& err) {
   out.clear();
   FILE* f = fopen(path.c_str(), "r");
   if (!f) { return true; }   // no file yet == empty queue, not an error
@@ -553,10 +567,36 @@ bool loadWorktodo(const string& path, vector<WorktodoEntry>& out, string& err) {
       fclose(f);
       return false;
     }
+    entry.line = t;
     out.push_back(entry);
   }
   fclose(f);
   return true;
+}
+
+// For both public functions: false when the wait for the lock ended without
+// it -- Ctrl-C, or a self-test's time limit.
+bool lockOrExplain(const FileLock& lock, string& err, bool* interrupted) {
+  if (lock.state() == FileLock::State::Interrupted) {
+    err = "interrupted while waiting for " + lock.lockPath();
+    if (interrupted) { *interrupted = true; }
+    return false;
+  }
+  if (lock.state() == FileLock::State::TimedOut) {
+    err = "timed out waiting for " + lock.lockPath();
+    return false;
+  }
+  return true;                 // Held, or Unlocked (carrying on without it)
+}
+
+} // namespace
+
+bool loadWorktodo(const string& path, vector<WorktodoEntry>& out, string& err,
+                  bool* interrupted) {
+  if (interrupted) { *interrupted = false; }
+  FileLock lock(path);
+  if (!lockOrExplain(lock, err, interrupted)) { out.clear(); return false; }
+  return loadLocked(path, out, err);
 }
 
 ResolvedBounds resolveBounds(const WorktodoEntry& entry, u64 configuredB1, u64 configuredB2) {
@@ -564,7 +604,9 @@ ResolvedBounds resolveBounds(const WorktodoEntry& entry, u64 configuredB1, u64 c
   return {configuredB1, configuredB2};
 }
 
-bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string& err) {
+namespace {
+
+bool consumeLocked(const string& path, const WorktodoEntry& entry, string& err) {
   FILE* fi = fopen(path.c_str(), "r");
   if (!fi) { err = "worktodo.txt disappeared"; return false; }
 
@@ -598,7 +640,7 @@ bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string
     if (fwrite(raw.data(), 1, raw.size(), fo) != raw.size()) { ok = false; }
   }
   fclose(fi);
-  fclose(fo);
+  if (fclose(fo) != 0) { ok = false; }
 
   if (!ok || !removed) {
     remove(tmp.c_str());
@@ -608,15 +650,32 @@ bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string
     return false;
   }
 
+  // filesystem::rename replaces the existing file. When it fails anyway it is
+  // a sharing violation -- a program holding worktodo.txt open without delete
+  // sharing, as AutoPrimeNet's status display does while it reads it without
+  // the lock -- which clears in moments. Never delete worktodo.txt to make
+  // room: until the rename landed there would be no queue at all.
   std::error_code ec;
-  filesystem::rename(tmp, path, ec);
-  if (ec) {
-    // Windows will not rename onto an existing file.
-    filesystem::remove(path, ec);
+  for (Timer t;;) {
     filesystem::rename(tmp, path, ec);
+    if (!ec || t.at() >= 5.0) { break; }
+    Timer::usleep(50'000);
   }
-  if (ec) { err = "rename failed: " + ec.message(); return false; }
+  if (ec) { remove(tmp.c_str()); err = "rename failed: " + ec.message(); return false; }
   return true;
+}
+
+} // namespace
+
+bool consumeWorktodoEntry(const string& path, const WorktodoEntry& entry, string& err,
+                          bool* interrupted, const FileLock* alreadyHeld) {
+  if (interrupted) { *interrupted = false; }
+  if (alreadyHeld && alreadyHeld->held() && alreadyHeld->lockPath() == path + ".lck") {
+    return consumeLocked(path, entry, err);
+  }
+  FileLock lock(path);
+  if (!lockOrExplain(lock, err, interrupted)) { return false; }
+  return consumeLocked(path, entry, err);
 }
 
 namespace {
@@ -1418,6 +1477,199 @@ int runWorktodoTests() {
       printf("     %s  config.txt b1=7777 b2=88888888 does not leak in (got %llu/%llu)\n",
              ok ? "PASS" : "FAIL",
              (unsigned long long) rb.b1, (unsigned long long) rb.b2); }
+  }
+
+  printf("\n  T. the .lck convention shared with AutoPrimeNet (FileLock)\n");
+  {
+    // Every wait here has a limit, so a broken lock fails the test instead of
+    // hanging it, and every stop flag is this test's own: gInterrupted is
+    // never touched (the GPU tests that follow would all read as interrupted).
+    const string LCK = string(TEST_FILE) + ".lck";
+    filesystem::remove(LCK);
+    std::atomic<bool> stop{false};
+    std::mutex msgMutex;
+    vector<FileLock::Msg> msgs;
+    FileLock::Options o;
+    o.stop = &stop;
+    o.maxWaitSec = 5;
+    o.quietSec = 0.1;
+    o.graceSec = 0.2;
+    o.say = [&](FileLock::Msg m, const string&) { lock_guard<mutex> g(msgMutex); msgs.push_back(m); };
+    auto count = [&](FileLock::Msg m) {
+      lock_guard<mutex> g(msgMutex);
+      return (int) std::count(msgs.begin(), msgs.end(), m);
+    };
+    auto clearMsgs = [&] { lock_guard<mutex> g(msgMutex); msgs.clear(); };
+    // What AutoPrimeNet, mfaktc and the rest do: create exclusively, close.
+    auto foreignCreate = [&]() -> int {
+      int fd = -1;
+      const errno_t e = _sopen_s(&fd, LCK.c_str(), _O_CREAT | _O_EXCL | _O_WRONLY, _SH_DENYNO,
+                                 _S_IREAD | _S_IWRITE);
+      if (e == 0) { _close(fd); }
+      return e;
+    };
+    auto result = [&](bool ok, const char* what) {
+      if (!ok) { ++fails; }
+      printf("     %s  %s\n", ok ? "PASS" : "FAIL", what);
+    };
+
+    { // T1
+      bool ok;
+      { FileLock l(TEST_FILE, o); ok = l.held() && filesystem::exists(LCK); }
+      ok = ok && !filesystem::exists(LCK);
+      { FileLock l(TEST_FILE, o); ok = ok && l.held(); }
+      ok = ok && !filesystem::exists(LCK);
+      result(ok, "T1 taking the lock creates the .lck, letting go removes it, and again");
+    }
+    { // T2
+      try { FileLock l(TEST_FILE, o); throw 1; } catch (int) {}
+      result(!filesystem::exists(LCK), "T2 an exception unwinding past the lock still removes it");
+    }
+    { // T3 -- the contract everything else rests on.
+      int whileHeld = 0, afterRelease = 0;
+      {
+        FileLock l(TEST_FILE, o);
+        whileHeld = l.held() ? foreignCreate() : -1;
+      }
+      afterRelease = foreignCreate();
+      filesystem::remove(LCK);
+      result(whileHeld == EEXIST && afterRelease == 0,
+             "T3 while held, another program's exclusive create gets EEXIST; after, it succeeds");
+    }
+    { // T4
+      clearMsgs();
+      writeRaw(LCK, "");
+      FileLock::Options o4 = o;
+      o4.staleHintSec = 0.15;
+      std::atomic<bool> got{false};
+      FileLock::State st = FileLock::State::Unlocked;
+      std::thread waiter([&] { FileLock l(TEST_FILE, o4); st = l.state(); got = l.held(); });
+      Timer::usleep(300'000);
+      const bool blocked = !got.load() && filesystem::exists(LCK);
+      filesystem::remove(LCK);                 // the other program lets go
+      waiter.join();
+      const bool ok = blocked && st == FileLock::State::Held && !filesystem::exists(LCK)
+          && count(FileLock::Msg::Waiting) == 1 && count(FileLock::Msg::StaleHint) == 1
+          && count(FileLock::Msg::Acquired) == 1;
+      result(ok, "T4 another program's lock blocks until it is deleted; one message of each kind");
+    }
+    { // T5
+      writeRaw(LCK, "");
+      stop = true;
+      Timer t;
+      FileLock::Options give = o;
+      FileLock g(TEST_FILE, give);
+      const double gaveUpAfter = t.at();
+      FileLock::Options go = o;
+      go.onInterrupt = FileLock::OnInterrupt::Proceed;
+      FileLock p(TEST_FILE, go);
+      const bool foreignKept = filesystem::exists(LCK);
+      filesystem::remove(LCK);
+      FileLock freeLock(TEST_FILE, o);         // stop still set, but nobody holds it
+      const bool ok = g.state() == FileLock::State::Interrupted && gaveUpAfter >= 0.15
+          && gaveUpAfter < 2.0 && p.state() == FileLock::State::Unlocked && foreignKept
+          && freeLock.held();
+      stop = false;
+      result(ok, "T5 Ctrl-C: GiveUp gives up, Proceed goes on unlocked, a free lock is still taken");
+    }
+    FileLock::Options quick = o;               // for the functions that lock internally
+    FileLock::TestDefaults testDefaults(quick);
+    { // T6
+      writeRaw(TEST_FILE, "1000003\n1000033\n");
+      vector<WorktodoEntry> before;
+      string err;
+      loadWorktodo(TEST_FILE, before, err);
+      writeRaw(LCK, "");
+      bool untouched = false;
+      std::thread other([&] {
+        Timer::usleep(300'000);
+        vector<WorktodoEntry> now;
+        string e2;
+        untouched = loadLocked(TEST_FILE, now, e2) && now.size() == 2;
+        filesystem::remove(LCK);
+      });
+      Timer t;
+      const bool consumed = before.size() == 2 && consumeWorktodoEntry(TEST_FILE, before[0], err);
+      const double waitedFor = t.at();
+      other.join();
+      vector<WorktodoEntry> after;
+      const bool loaded = loadWorktodo(TEST_FILE, after, err);
+      const bool ok = consumed && untouched && waitedFor >= 0.25 && loaded && after.size() == 1
+          && after[0].exponent == 1000033 && !filesystem::exists(LCK);
+      result(ok, "T6 consume waits for another program's lock, then removes exactly its line");
+    }
+    { // T7
+      writeRaw(TEST_FILE, "1000003\n");
+      writeRaw(LCK, "");
+      stop = true;
+      vector<WorktodoEntry> out;
+      string err;
+      bool intrLoad = false, intrConsume = false;
+      const bool loaded = loadWorktodo(TEST_FILE, out, err, &intrLoad);
+      WorktodoEntry e;
+      e.exponent = 1000003;
+      e.lineNo = 1;
+      const bool consumed = consumeWorktodoEntry(TEST_FILE, e, err, &intrConsume);
+      stop = false;
+      filesystem::remove(LCK);
+      vector<WorktodoEntry> still;
+      const bool ok = !loaded && intrLoad && out.empty() && !consumed && intrConsume
+          && loadWorktodo(TEST_FILE, still, err) && still.size() == 1;
+      result(ok, "T7 Ctrl-C while waiting: load and consume report it and change nothing");
+    }
+    { // T8
+      clearMsgs();
+      Timer t;
+      FileLock a(TEST_FILE, o);
+      FileLock b(TEST_FILE, o);
+      const bool ok = a.held() && b.state() == FileLock::State::Unlocked && t.at() < 1.0
+          && count(FileLock::Msg::Unlocked) == 1;
+      result(ok, "T8 locking a file this program already holds does not wait on itself");
+    }
+    { // T9
+      writeRaw(TEST_FILE, "1000003\n1000033\n");
+      vector<WorktodoEntry> entries;
+      string err;
+      loadWorktodo(TEST_FILE, entries, err);
+      FileLock pre(TEST_FILE, o);
+      Timer t;
+      bool intr = false;
+      const bool consumed = entries.size() == 2
+          && consumeWorktodoEntry(TEST_FILE, entries[0], err, &intr, &pre);
+      const bool quickly = t.at() < 1.0;
+      const int othersWhileHeld = foreignCreate();
+      pre.release();
+      const int othersAfter = foreignCreate();
+      filesystem::remove(LCK);
+      const bool ok = consumed && quickly && othersWhileHeld == EEXIST && othersAfter == 0;
+      result(ok, "T9 consume under a lock the caller already holds; others wait until it is let go");
+    }
+    { // T10
+      writeRaw(TEST_FILE, "1000003\n1000033\n");
+      vector<WorktodoEntry> entries;
+      string err;
+      loadWorktodo(TEST_FILE, entries, err);
+      // A reader holding the file open without delete sharing -- which is how
+      // both the CRT and Python open files -- makes the replacing rename fail
+      // until it closes.
+      std::atomic<bool> opened{false};
+      std::thread reader([&] {
+        FILE* f = fopen(TEST_FILE, "r");
+        opened = true;
+        Timer::usleep(300'000);
+        if (f) { fclose(f); }
+      });
+      while (!opened.load()) { Timer::usleep(1000); }
+      Timer t;
+      const bool consumed = entries.size() == 2 && consumeWorktodoEntry(TEST_FILE, entries[0], err);
+      const double took = t.at();
+      reader.join();
+      vector<WorktodoEntry> after;
+      const bool ok = consumed && took >= 0.25 && loadWorktodo(TEST_FILE, after, err)
+          && after.size() == 1 && after[0].exponent == 1000033;
+      result(ok, "T10 a reader holding worktodo.txt open delays the consume instead of failing it");
+    }
+    filesystem::remove(LCK);
   }
 
   filesystem::remove(TEST_FILE);

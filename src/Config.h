@@ -15,7 +15,7 @@
 // change that alters what a result MEANS, so a submitted result can be traced
 // to the code that produced it.
 inline constexpr const char* PROGRAM_NAME = "Mp_p-1_gpu";
-inline constexpr const char* PROGRAM_VERSION = "1.9.9";
+inline constexpr const char* PROGRAM_VERSION = "1.9.10";
 
 // What to do with the console window when the program exits.
 //   AUTO   hold only when launched by double-click, i.e. when closing would
@@ -98,7 +98,7 @@ struct Config {
   std::string username;
   std::string computerName;
   bool checkpoint = true;
-  std::string checkpointFile;   // "" == checkpoint_<exponent>.txt
+  std::string checkpointFile;   // "" == pm1_<exponent>_b1_<B1>.save etc.; set: one name for every job
   // How often stage 1's squaring ladder and stage 2's pairing walk save
   // their progress, in seconds (converted to a squaring/mul count at the
   // measured rate -- see PM1.cpp's saveEverySquarings/saveEvery). Nothing to
@@ -154,23 +154,21 @@ struct Config {
   //     ll_testing_cost = (tests_saved + 2*ERROR_RATE) * n * 2
   // and chooseBounds prices one at exponent + (bias-1)*exponent, which is
   // bias * exponent. Both are "cost of one test" times "tests a factor would
-  // save". The default bias of 2.0 is exactly PrimeNet's tests_saved for a
-  // first-time test.
+  // save". The shipped config.txt's bias of 2.0 is exactly PrimeNet's
+  // tests_saved for a first-time test.
   //
-  // It is still not fed into chooseBounds/choosePP1Bounds, and that is a
-  // choice rather than an oversight: `bias` is a config-wide setting the user
-  // made deliberately, and letting each assignment silently retune the bounds
-  // would take that away. Printed as FYI so the difference is visible when it
-  // matters -- an assignment saying 1.0 against a config saying 2.0 means this
-  // run will pick bounds PrimeNet would call aggressive.
+  // So a positive tests_saved REPLACES bias for its entry (main.cpp's queue
+  // loop): PrimeNet knows whether this exponent still needs one test or two,
+  // and config.txt only holds a standing preference. 0 means "P-1 already
+  // done" to Prime95 and is treated as absent, leaving bias as configured.
   double testsSaved = 0;
-  // Pminus1='s optional B2_start (stage 2 already partly covered elsewhere)
-  // cannot be honored -- see Worktodo.h's WorktodoEntry::b2Start comment --
-  // so runOneJob prints one warning instead of silently ignoring it.
   // The FFT length actually chosen for this job, for results.txt's
   // "fft-length" -- Prime95 reports it and PrimeNet records it, and it is
   // the one number in the line that describes HOW the work was done.
   u64 fftLength = 0;
+  // Pminus1='s optional B2_start (stage 2 already partly covered elsewhere)
+  // cannot be honored -- see Worktodo.h's WorktodoEntry::b2Start comment --
+  // so runOneJob prints one warning instead of silently ignoring it.
   bool b2StartIgnored = false;
   u64 ignoredB2Start = 0;
 };

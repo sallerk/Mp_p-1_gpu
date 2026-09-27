@@ -90,3 +90,13 @@ USING IT WITH AUTOPRIMENET
   Set `wait_for_work = yes` in config.txt (the shipped default) so this
   program waits rather than exiting when the queue is momentarily empty.
 
+  Both programs take worktodo.txt.lck and results.txt.lck while they use
+  those files (since 1.9.10; tested with AutoPrimeNet 2.0.1), so neither
+  overwrites the other's changes. To add work by hand while both run, do
+  NOT edit worktodo.txt: put the lines in worktodo.add, which AutoPrimeNet
+  appends to worktodo.txt under the lock when it starts and then every
+  --timeout interval (an hour by default). Or stop both programs first.
+
+  A .lck file left over when no program is running is stale -- delete it.
+  This program's own lock cannot be left over; MANUAL.md has the details.
+

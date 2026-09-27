@@ -32,7 +32,13 @@ struct FoundFactor {
   bool dividesMp = false; // verified 2^p == 1 (mod value)
 };
 
+// Where stage 1's residue came from. Recorded for the self-tests, which have to
+// tell a correct resume apart from a silent recompute: both end with the same
+// residue.
+enum class Stage1Path { Scratch, Resumed, AlreadyComplete, Extended, ResumedExtension };
+
 struct PM1Result {
+  Stage1Path path = Stage1Path::Scratch;
   bool foundFactor = false;
   Nat factor;               // meaningful only if foundFactor
   bool interrupted = false;

@@ -1542,14 +1542,18 @@ Words Gpu::powResidue(const Words& base, const vector<u64>& expLimbs,
   u64 done = total - startBit;
   enum LEAD_TYPE leadIn = LEAD_NONE;
 
+  const bool checkpointing = saveEvery && save;
   for (size_t bi = startBit; bi-- > 0; ) {
     const bool bit = (expLimbs[bi / 64] >> (bi % 64)) & 1;
     const bool last = (bi == 0);
-    const bool wantSave = saveEvery && save && ((done + 1) % saveEvery == 0);
+    const bool wantSave = checkpointing && ((done + 1) % saveEvery == 0);
+    const bool wantCheck = reportEvery && ((done + 1) % reportEvery == 0);
 
     // A multiply, a checkpoint and the final result all need bufData current,
     // so those iterations cannot leave the value in the transform buffers.
-    const bool materialize = bit || last || wantSave || useLongCarry;
+    // As in powBase3, a report check counts too when checkpointing: it is
+    // where an interrupt is noticed, and the interrupt saves.
+    const bool materialize = bit || last || wantSave || (wantCheck && checkpointing) || useLongCarry;
     enum LEAD_TYPE leadOut = materialize ? LEAD_NONE : LEAD_WIDTH;
 
     square(bufData, bufData, leadIn, leadOut, false, false);
@@ -1565,9 +1569,12 @@ Words Gpu::powResidue(const Words& base, const vector<u64>& expLimbs,
       queue->finish();
       save(readData(), u64(bi));
     }
-    if (reportEvery && done % reportEvery == 0) {
+    if (wantCheck) {
       queue->finish();
-      if (!progress(done, total)) { break; }
+      if (!progress(done, total)) {   // interrupted
+        if (checkpointing) { save(readData(), u64(bi)); }
+        break;
+      }
     }
   }
 

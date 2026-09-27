@@ -16,6 +16,7 @@
 #include "Stage2Plan.h"
 #include "Stage2Save.h"
 #include "Pp1Stage2Save.h"
+#include "Save.h"
 #include "TuneEntry.h"
 #include "clwrap.h"
 #include "Context.h"
@@ -438,24 +439,26 @@ int runExtendTests(GpuCommon shared, Queue* q, const string& fftSpec) {
            eFrom.bits(), r.bits(), eTo.bits());
   }
 
+  // B, C and D share one Gpu; C reuses B's residues.
+  FFTConfig fft = smallestFFT(p, fftSpec);
+  auto gpu = Gpu::make(q, p, shared, fft, {}, false);
+  auto quiet = [](u64, u64) { return true; };
+  const Nat r = stage1ExponentDelta(659, 1873, p);
+  Words xFrom, extended;
+
   printf("\n  B. x_from ^ R == x_to     (GPU, vs from scratch)\n");
   {
     const u64 b1From = 659, b1To = 1873;
-    FFTConfig fft = smallestFFT(p, fftSpec);
-    auto gpu = Gpu::make(q, p, shared, fft, {}, false);
-    auto quiet = [](u64, u64) { return true; };
-
     const Nat eFrom = stage1Exponent(b1From, p);
     const Nat eTo = stage1Exponent(b1To, p);
-    const Nat r = stage1ExponentDelta(b1From, b1To, p);
 
     Timer t1;
-    Words xFrom = gpu->powBase3(eFrom.toVector(), 0, quiet);
+    xFrom = gpu->powBase3(eFrom.toVector(), 0, quiet);
     Words xTo = gpu->powBase3(eTo.toVector(), 0, quiet);
     const double freshSecs = t1.at();
 
     Timer t2;
-    Words extended = gpu->powResidue(xFrom, r.toVector(), 0, quiet);
+    extended = gpu->powResidue(xFrom, r.toVector(), 0, quiet);
     const double extSecs = t2.at();
 
     const bool ok = extended == xTo;
@@ -468,6 +471,153 @@ int runExtendTests(GpuCommon shared, Queue* q, const string& fftSpec) {
            r.bits() - 1, eTo.bits() - 1,
            100.0 * (1.0 - double(r.bits()) / double(eTo.bits())),
            extSecs, freshSecs);
+  }
+
+  printf("\n  C. an interrupted extension resumes to the uninterrupted residue   (GPU)\n");
+  {
+    // M4 C's guard, for the extension's own ladder. A partial extension is
+    // saved two ways: by the interrupt itself (report every squaring so the
+    // stop is exact, saveEvery beyond the whole walk so no scheduled save can
+    // stand in for it), and by a scheduled periodic save.
+    const vector<u64> R = r.toVector();
+    const u64 total = r.bits() - 1;
+
+    const u64 stopAfter = std::max<u64>(1, total / 2);
+    u64 seen = 0, savedBit = ~0ull;
+    Words saved;
+    auto stopHalfway = [&](u64 done, u64) { seen = done; return done < stopAfter; };
+    auto capture = [&](const Words& w, u64 bit) { saved = w; savedBit = bit; };
+    gpu->powResidue(xFrom, R, 1, stopHalfway, nullptr, 0, 1'000'000'000u, capture);
+    const bool stopped = !saved.empty() && seen >= stopAfter && savedBit + 1 < r.bits();
+    const Words resumed = stopped ? gpu->powResidue(xFrom, R, 0, quiet, &saved, savedBit) : Words{};
+    const bool okInt = stopped && resumed == extended;
+    check(okInt, "extension checkpointed by the interrupt resumes to the uninterrupted residue");
+    printf("     %s  interrupt save at %llu/%llu: resumed res64=%016llx  uninterrupted=%016llx\n",
+           okInt ? "PASS" : "FAIL", (unsigned long long) seen, (unsigned long long) total,
+           (unsigned long long) (resumed.empty() ? 0 : res64(resumed)),
+           (unsigned long long) res64(extended));
+
+    Words first;
+    u64 firstBit = ~0ull;
+    auto captureFirst = [&](const Words& w, u64 bit) {
+      if (first.empty()) { first = w; firstBit = bit; }
+    };
+    gpu->powResidue(xFrom, R, 0, quiet, nullptr, 0, u32(std::max<u64>(1, total / 3)), captureFirst);
+    const bool gotFirst = !first.empty() && firstBit + 1 < r.bits();
+    const Words resumed2 = gotFirst ? gpu->powResidue(xFrom, R, 0, quiet, &first, firstBit) : Words{};
+    const bool okSched = gotFirst && resumed2 == extended;
+    check(okSched, "extension checkpointed on schedule resumes to the uninterrupted residue");
+    printf("     %s  scheduled save at bit %llu: resumed res64=%016llx\n",
+           okSched ? "PASS" : "FAIL", (unsigned long long) firstBit,
+           (unsigned long long) (resumed2.empty() ? 0 : res64(resumed2)));
+  }
+
+  printf("\n  D. an interrupted extension left on disk resumes AS an extension   (driver)\n");
+  {
+    // The bug this guards: an extension's periodic checkpoint is written under
+    // the NEW B1's name with its bit index counted in R, and a restart used to
+    // accept it as an ordinary partial stage 1 and carry on up E's ladder from
+    // x_from^(part of R) -- a plausible, silently wrong residue. Each case
+    // plants exactly the files an interrupted run leaves, lets runPM1Stage1
+    // find them, and demands the from-scratch residue both in memory and in
+    // the completed checkpoint it writes.
+    const u64 from = 733, to = 1777;              // no other test uses these
+    const Nat eFrom = stage1Exponent(from, p);
+    const Nat eTo = stage1Exponent(to, p);
+    const Nat rD = stage1ExponentDelta(from, to, p);
+    const Words xF = gpu->powBase3(eFrom.toVector(), 0, quiet);
+    const Words xT = gpu->powBase3(eTo.toVector(), 0, quiet);
+
+    // A periodic save from partway up R's ladder, and one from partway up E's.
+    Words extPart, plainPart;
+    u64 extBit = 0, plainBit = 0;
+    gpu->powResidue(xF, rD.toVector(), 0, quiet, nullptr, 0, u32(rD.bits() / 2),
+                    [&](const Words& w, u64 bit) { if (extPart.empty()) { extPart = w; extBit = bit; } });
+    gpu->powBase3(eTo.toVector(), 0, quiet, nullptr, 0, u32(eTo.bits() / 2),
+                  [&](const Words& w, u64 bit) { if (plainPart.empty()) { plainPart = w; plainBit = bit; } });
+
+    const string baseFile = defaultSavePath(p, from), newFile = defaultSavePath(p, to);
+    auto clean = [&] {
+      for (const string& f : {baseFile, newFile}) { remove(f.c_str()); remove((f + ".tmp").c_str()); }
+    };
+    auto put = [&](const string& path, u64 b1, const Nat& e, u64 nextBit, u64 baseB1,
+                   bool complete, const Words& w) {
+      SaveState s;
+      s.exponent = p;
+      s.b1 = b1;
+      s.eBits = e.bits();
+      s.nextBit = nextBit;
+      s.baseB1 = baseB1;
+      s.complete = complete;
+      s.residue = w;
+      string err;
+      return saveState(path, s, err);
+    };
+    auto completedHolds = [&](const Words& want) {
+      SaveState w, got;
+      w.exponent = p;
+      w.b1 = to;
+      w.eBits = eTo.bits();
+      string err;
+      return loadState(newFile, w, got, err) && got.complete && got.residue == want;
+    };
+    // The residue alone cannot tell a correct resume from a recompute that
+    // quietly threw the checkpoint away, so each case also names the path.
+    auto pathName = [](Stage1Path s) {
+      switch (s) {
+        case Stage1Path::Scratch:          return "from scratch";
+        case Stage1Path::Resumed:          return "resumed";
+        case Stage1Path::AlreadyComplete:  return "already complete";
+        case Stage1Path::Extended:         return "extended";
+        case Stage1Path::ResumedExtension: return "resumed the extension";
+      }
+      return "?";
+    };
+    auto runCase = [&](const char* name, bool planted, bool extend,
+                       const std::function<bool(Stage1Path)>& pathOk) {
+      Config cfg;
+      cfg.exponent = p;
+      cfg.fftSpec = fftSpec;
+      cfg.reportEvery = 0;
+      cfg.extend = extend;
+      const PM1Result res = runPM1Stage1(*gpu, cfg, to, false, /*doGcd=*/false);
+      const bool ok = planted && res.residue == xT && completedHolds(xT) && pathOk(res.path);
+      check(ok, string("extension resume, ") + name);
+      printf("     %s  %s  (%s)\n", ok ? "PASS" : "FAIL", name, pathName(res.path));
+      clean();
+    };
+    auto is = [](Stage1Path want) { return [want](Stage1Path s) { return s == want; }; };
+
+    const bool captured = !extPart.empty() && !plainPart.empty();
+    check(captured, "captured the partial checkpoints to plant");
+    if (captured) {
+      clean();
+      bool planted = put(baseFile, from, eFrom, 0, 0, true, xF)
+                  && put(newFile, to, eTo, extBit, from, false, extPart);
+      runCase("D1 base + partial extension -> resumed as the extension", planted, true,
+              is(Stage1Path::ResumedExtension));
+
+      // Extended (from another test's smaller completed B1, if one is lying
+      // in this directory) or from scratch -- either is right; resuming is not.
+      planted = put(newFile, to, eTo, extBit, from, false, extPart);
+      runCase("D2 partial extension, base missing -> refused, still correct", planted, true,
+              [](Stage1Path s) { return s == Stage1Path::Extended || s == Stage1Path::Scratch; });
+
+      planted = put(baseFile, from, eFrom, 0, 0, true, xF)
+             && put(newFile, to, eTo, extBit, from, false, extPart);
+      runCase("D3 extend = 0 -> partial extension ignored, from scratch", planted, false,
+              is(Stage1Path::Scratch));
+
+      planted = put(baseFile, from, eFrom, 0, 0, true, xF)
+             && put(newFile, to, eTo, rD.bits() - 1, from, false, extPart);
+      runCase("D4 partial extension with an impossible bit -> refused, extended afresh", planted, true,
+              is(Stage1Path::Extended));
+
+      planted = put(newFile, to, eTo, plainBit, 0, false, plainPart);
+      runCase("D5 ordinary partial stage 1 -> still resumed", planted, true,
+              is(Stage1Path::Resumed));
+    }
+    clean();
   }
 
   printf("\nM5b: %d failed.\n\n", failures - before);

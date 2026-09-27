@@ -35,7 +35,11 @@ struct Pp1Start;
 //             this result (which is how Prime95 decides to omit "d" too).
 //             Non-zero on a P-1 line also emits "stage2-fft-length": the
 //             two fields mark the same thing, that stage 2 is what ran.
-void writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
+//
+// Returns false, after a WARNING, when the file could not be opened, written
+// or closed. The job's worktodo entry must then stay queued: consuming it
+// would lose the result.
+bool writeResultJson(const Config& cfg, const char* worktype, u64 b1, u64 b2,
                      const std::vector<FoundFactor>& factors, const Pp1Start* start,
                      u32 stage2D);
 

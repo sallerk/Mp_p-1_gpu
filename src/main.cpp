@@ -27,6 +27,7 @@
 #include "Context.h"
 #include "FFTConfig.h"
 #include "File.h"
+#include "FileLock.h"
 #include "Gcd.h"
 #include "Gpu.h"
 #include "GpuCommon.h"
@@ -293,7 +294,8 @@ void dropKnownFactors(const Config& cfg, Result& res) {
 // unlike most of this file's routine progress output. Separate from the
 // results file on purpose: that one is machine-readable for submission,
 // this is for the person (or the log) watching.
-void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
+// Returns writeResultJson's verdict on the results-file line.
+bool reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
                    u64 b1, u64 b2, const char* worktype, const Pp1Start* start,
                    u32 stage2D) {
   // `factors` is what is left after dropKnownFactors, so the count is of NEW
@@ -318,7 +320,7 @@ void reportFactors(const Config& cfg, const std::vector<FoundFactor>& factors,
           ff.value.dec().c_str(), cfg.exponent);
     }
   }
-  writeResultJson(cfg, worktype, b1, b2, factors, start, stage2D);
+  return writeResultJson(cfg, worktype, b1, b2, factors, start, stage2D);
 }
 
 } // namespace
@@ -441,8 +443,27 @@ void applyTunedOptions(Args& args, u32 E) {
 // into the usual "FAILED: ..." message and return 2). Called once per
 // worktodo.txt entry by runMain's queue loop; cfg.exponent/cfg.factoredTo
 // must already be set for the entry being run.
+//
+// The queue loop consumes the entry only on 0, so 0 must mean every result
+// the entry asked for is in the results file. An interrupt that leaves any
+// of it undone returns 1, and a result that could not be written throws.
+//
+// consumeLock: before writing a P-1 no-factor result, the job takes the
+// worktodo lock here and the queue loop consumes the entry under it. That
+// makes "result written, line removed" one step to AutoPrimeNet, which marks
+// such a result done only if the line is gone when it looks (a P-1 factor
+// and P+1 results are always marked done).
 static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
-                     const std::string& fftSpec, int deviceOverride) {
+                     const std::string& fftSpec, int deviceOverride,
+                     std::unique_ptr<FileLock>& consumeLock) {
+  auto mustAppend = [&cfg](bool written) {
+    if (!written) {
+      throw std::runtime_error("could not write the result to " + cfg.resultsFile + "; M"
+                               + std::to_string(cfg.exponent) + " stays queued, and its"
+                               " checkpoints make the rerun cheap");
+    }
+  };
+
   // Kernel options first: they change how the transform is compiled, so they
   // have to be settled before the FFT below is timed, let alone run.
   applyTunedOptions(*shared.args, cfg.exponent);
@@ -634,7 +655,12 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     gPhaseTotal = wantPp1Stage2 ? 5 : 3;
     u32 attempt = 0;
     for (u32 run : cfg.pp1Runs) {
-      if (gInterrupted.load()) { break; }
+      // Not `break`: falling out of the loop reads as "every run done", and a
+      // P+1-only entry would then be consumed with runs never attempted.
+      if (gInterrupted.load()) {
+        log("\n  interrupted before P+1 run %u; resume by running again.\n", run);
+        return 1;
+      }
       // Run number -> starting point, Prime95's table: 1 is 2/7, 2 is 6/5,
       // 3 and up a random pair. See Pp1Start::forRun.
       const Pp1Start start = Pp1Start::forRun(run, cfg.exponent);
@@ -648,14 +674,23 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       }
       dropKnownFactors(cfg, pr);
       if (pr.foundFactor) {
-        reportFactors(cfg, pr.factors, pp1B1, pp1B1, "P+1", &start, 0);
+        mustAppend(reportFactors(cfg, pr.factors, pp1B1, pp1B1, "P+1", &start, 0));
         break;                      // no point trying further starts
       }
       log("  P+1 start %s: no factor\n", start.label().c_str());
 
       // Only when stage 1 came up empty for this seed -- a factor already in
       // hand makes the second stage wasted work, exactly like P-1's own rule.
-      if (wantPp1Stage2 && !gInterrupted.load()) {
+      if (wantPp1Stage2) {
+        // Ctrl-C during stage 1's gcd lets the gcd finish, so it lands here.
+        // Skipping stage 2 and writing the line below would claim a B2 that
+        // never ran. Stage 1 is saved complete: the rerun repeats only its
+        // gcd, then does stage 2.
+        if (gInterrupted.load()) {
+          log("\n  interrupted after P+1 stage 1 for start %s; resume by running again.\n",
+              start.label().c_str());
+          return 1;
+        }
         PP1Stage2Result s2 = runPP1Stage2(*gpu, cfg, pr.residue, start, pp1B1,
                                           pp1Bounds.b2, shape.d, shape.w, true);
         if (s2.interrupted) {
@@ -665,7 +700,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
         }
         dropKnownFactors(cfg, s2);
         if (s2.foundFactor) {
-          reportFactors(cfg, s2.factors, pp1B1, pp1Bounds.b2, "P+1", &start, 0);
+          mustAppend(reportFactors(cfg, s2.factors, pp1B1, pp1Bounds.b2, "P+1", &start, 0));
           break;
         }
         log("  P+1 start %s: no factor in stage 2 either (B2=%llu)\n",
@@ -674,7 +709,8 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       // One result per RUN, like Prime95: each start is an independent
       // attempt, and a single line covering several of them could not say
       // which start it described.
-      writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? pp1Bounds.b2 : pp1B1, {}, &start, 0);
+      mustAppend(writeResultJson(cfg, "P+1", pp1B1, wantPp1Stage2 ? pp1Bounds.b2 : pp1B1, {},
+                                 &start, 0));
     }
     log("\n  appended to %s\n", cfg.resultsFile.c_str());
     if (!cfg.doPM1) {
@@ -728,7 +764,11 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
   // no-factor results.
   std::atomic<bool> stage1Won{false};
   std::future<void> gcdTask;
-  if (overlapGcd && !gInterrupted.load()) {
+  // Launched even if Ctrl-C has just landed: the gcd checks the flag itself
+  // before starting and reports `interrupted`, which the collection below
+  // turns into a clean return 1. Skipping the launch instead left no gcd, no
+  // stage 2 and no result, and the job returned 0 -- consuming the entry.
+  if (overlapGcd) {
     printf("  [%u/5 gcd CPU] gcd(x-1, M_p) running alongside stage 2 --"
            " reported when both finish\n", 3);
     fflush(stdout);
@@ -753,7 +793,7 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     dropKnownFactors(cfg, r);
     printf("\n");
     if (r.foundFactor) {
-      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0);
+      mustAppend(reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0));
       log("  appended to %s\n", cfg.resultsFile.c_str());
     } else {
       log("  M%u: no factor found with B1 = %llu\n",
@@ -765,7 +805,8 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
       // job, so that case is always reported above regardless of runStage2 --
       // and the "appended" line only prints when a write actually happened.
       if (!runStage2) {
-        writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, nullptr, 0);
+        consumeLock = std::make_unique<FileLock>(cfg.worktodoFile);
+        mustAppend(writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, nullptr, 0));
         log("  appended to %s\n", cfg.resultsFile.c_str());
       }
     }
@@ -773,11 +814,13 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
 
   // ---- stage 2 --------------------------------------------------------------
   // Only when stage 1 came up empty -- a factor already in hand makes the whole
-  // second stage wasted work. When the gcd is overlapped, "came up empty" is
-  // not known yet and this runs speculatively; see the bet described above.
+  // second stage wasted work. Stage 2 runs only alongside the overlapped gcd
+  // (runStage2 == overlapGcd), so "came up empty" is not known yet and this
+  // runs speculatively; see the bet described above. That is also why
+  // r.foundFactor must not be read here: the gcd thread is writing it.
   bool ranStage2 = false;
   PM1Stage2Result s2;
-  if (runStage2 && !r.foundFactor && !gInterrupted.load()) {
+  if (runStage2 && !gInterrupted.load()) {
     printf("\n");
     // The plan is built inside: which range actually has to be walked depends
     // on whether a completed stage 2 for a smaller B2 is on disk.
@@ -820,15 +863,19 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
         printf("  stage 1's gcd found a factor; the overlapped stage 2 had already\n"
                "  finished and is discarded\n");
       }
-      reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0);
+      mustAppend(reportFactors(cfg, r.factors, r.b1Used, r.b1Used, "P-1", nullptr, 0));
       log("  appended to %s\n", cfg.resultsFile.c_str());
       return 0;
     }
     log("  M%u: no factor found with B1 = %llu\n",
         cfg.exponent, (unsigned long long) r.b1Used);
     if (!ranStage2) {
-      writeResultJson(cfg, "P-1", r.b1Used, r.b1Used, {}, nullptr, 0);
-      log("  appended to %s\n", cfg.resultsFile.c_str());
+      // With the gcd empty, only Ctrl-C keeps a planned stage 2 from
+      // starting, and a stage-1-only line would report less than this entry
+      // asked for. Stage 1 is saved complete: the rerun repeats this gcd and
+      // goes on to stage 2.
+      log("  interrupted before stage 2 started; resume by running again.\n");
+      return 1;
     }
   }
 
@@ -849,11 +896,12 @@ static int runOneJob(Config& cfg, GpuCommon shared, Queue& queue,
     }
     dropKnownFactors(cfg, s2);
     if (s2.foundFactor) {
-      reportFactors(cfg, s2.factors, b1, bounds.b2, "P-1", nullptr, shape.d);
+      mustAppend(reportFactors(cfg, s2.factors, b1, bounds.b2, "P-1", nullptr, shape.d));
     } else {
       log("  M%u: no factor found in stage 2 either (B1=%llu, B2=%llu)\n",
           cfg.exponent, (unsigned long long) b1, (unsigned long long) bounds.b2);
-      writeResultJson(cfg, "P-1", b1, bounds.b2, {}, nullptr, shape.d);
+      consumeLock = std::make_unique<FileLock>(cfg.worktodoFile);
+      mustAppend(writeResultJson(cfg, "P-1", b1, bounds.b2, {}, nullptr, shape.d));
     }
     log("  appended to %s\n", cfg.resultsFile.c_str());
   }
@@ -968,8 +1016,10 @@ static int runMain(int argc, char** argv) {
     // Peek at the next queued exponent WITHOUT consuming it, purely so
     // --bounds and --tune (which read cfg.exponent same as always) have
     // something to scope themselves to. The actual job loop below re-reads
-    // worktodo.txt itself and consumes entries as their jobs complete.
-    if (haveConfig) {
+    // worktodo.txt itself and consumes entries as their jobs complete, and
+    // nothing else reads the peek -- so --selftest, --bench and
+    // --list-devices leave the queue (and its lock) alone.
+    if (haveConfig && (doBounds || doTune)) {
       std::vector<WorktodoEntry> peek;
       std::string werr;
       if (loadWorktodo(cfg.worktodoFile, peek, werr) && !peek.empty()) {
@@ -1178,9 +1228,14 @@ static int runMain(int argc, char** argv) {
     // (the entry stays queued, same as a single-exponent run failing today).
     bool printedWaiting = false;
     for (;;) {
+      // A Ctrl-C that lands during a job's final gcd lets the job finish and
+      // be consumed; stop here rather than start the next one.
+      if (gInterrupted.load()) { return 0; }   // ctrlHandler already printed
       std::vector<WorktodoEntry> entries;
       std::string werr;
-      if (!loadWorktodo(cfg.worktodoFile, entries, werr)) {
+      bool loadInterrupted = false;
+      if (!loadWorktodo(cfg.worktodoFile, entries, werr, &loadInterrupted)) {
+        if (loadInterrupted) { return 0; }    // Ctrl-C while another program held the lock
         printf("worktodo error: %s\n", werr.c_str());
         return 2;
       }
@@ -1273,11 +1328,25 @@ static int runMain(int argc, char** argv) {
                job.method == WorktodoEntry::PM1_ONLY ? "P-1" : "P+1");
       }
 
-      const int rc = runOneJob(cfg, shared, queue, fftSpec, deviceOverride);
+      std::unique_ptr<FileLock> consumeLock;
+      const int rc = runOneJob(cfg, shared, queue, fftSpec, deviceOverride, consumeLock);
       if (rc == 1) { return 1; }   // interrupted mid-job; entry stays queued
 
       std::string cerr;
-      if (!consumeWorktodoEntry(cfg.worktodoFile, job, cerr)) {
+      bool consumeInterrupted = false;
+      const bool consumed = consumeWorktodoEntry(cfg.worktodoFile, job, cerr, &consumeInterrupted,
+                                                 consumeLock.get());
+      consumeLock.reset();
+      if (!consumed && consumeInterrupted) {
+        log("\n  M%u is finished and its result is in %s, but Ctrl-C came while another\n"
+            "  program held %s.lck, so this line is still in %s:\n"
+            "    %s\n"
+            "  Remove it by hand, or it is redone and reported twice.\n",
+            job.exponent, cfg.resultsFile.c_str(), cfg.worktodoFile.c_str(),
+            cfg.worktodoFile.c_str(), job.line.c_str());
+        return 1;
+      }
+      if (!consumed) {
         log("WARNING: could not remove completed exponent %u from worktodo.txt: %s\n",
             job.exponent, cerr.c_str());
         return 2;   // do not risk silently reprocessing forever
