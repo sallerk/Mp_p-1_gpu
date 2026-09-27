@@ -614,10 +614,19 @@ const char* VERIFY_CACHE = "fft-verified.txt";
 // runs became repeatable. It costs more per candidate, and that is affordable
 // only because the ordering rule above now puts the right family first: the
 // budget buys accuracy on a few good candidates instead of noise on many.
+//
+// Length was only half of it. 3000 iterations is ~0.45 s at 15M, and each
+// candidate compiles its kernels first, leaving the GPU idle long enough to
+// drop its clocks: the window measured the clock ramp, 10-40% high. timePRP now
+// warms up for TIME_PRP_WARM_SECONDS before timing (1.9.9), and warm readings of
+// this same length agree to about 1%.
 const int SEARCH_QUICK = 5;
 
-// Tags a remembered cost with the scale it was measured at.
-string currentScale() { return "q" + std::to_string(SEARCH_QUICK); }
+// Tags a remembered cost with the scale it was measured at. The "w" marks a
+// warmed-up measurement (1.9.9, see TIME_PRP_WARM_SECONDS): a plain "q5" cost was
+// taken on a cold GPU and runs 10-40% high, so mixing one with warm costs in a
+// single comparison would bias it. Old entries keep their verdict and are re-timed.
+string currentScale() { return "q" + std::to_string(SEARCH_QUICK) + "w"; }
 
 string deviceTag(Queue* q) {
   const cl_device_id id = q->context->deviceId();
@@ -923,8 +932,8 @@ FFTConfig chooseVerifiedFFT(GpuCommon shared, Queue* q, u32 E,
   // the first two timings at all 13 exponents measured from M13466917 to
   // M99700031; the third only ever confirmed it, for another 8-12s. Most of
   // that is building the transform, not timing it -- 3000 iterations is 2-3s
-  // of the 6-12s a candidate costs -- so candidates, not iterations, are what
-  // the budget actually buys.
+  // of the 6-12s a candidate costs, plus timePRP's one-second warm-up -- so
+  // candidates, not iterations, are what the budget actually buys.
   const u32 SEARCH_MIN_TIMED = 2;
 
   // ...and the cap that stops a cheap exponent from timing everything offered.

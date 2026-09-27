@@ -1,5 +1,92 @@
 # Changelog
 
+## 1.9.9
+
+**Small exponents run about twice as fast, and the FFT search now measures the
+transform instead of the GPU's clock ramp.** Both came out of one investigation
+into why near-identical exponents were picking different FFTs; details and raw
+data are summarised below.
+
+### the host was oversleeping
+
+The host waits on the GPU with `std::this_thread::sleep_for` (`Queue.cpp`). On
+Windows 10 2004 and later, a process that has not asked for a finer timer sleeps
+in steps of the default ~15.6 ms tick, whatever other programs requested --
+measured here, `Sleep(1)`, `Sleep(2)` and `Sleep(3)` all took 15.7 ms. This
+program never asked. Below roughly 10M the GPU finishes the work it has queued
+well inside that and sits idle until the host wakes: at M1000003 stage 1 ran with
+the GPU **44% busy**, drawing 140 W.
+
+`main()` now calls `timeBeginPeriod(1)`. Measured against 1.9.8, same GPU,
+binaries alternated run by run:
+
+```
+M1000003    stage 1   ~110 -> 57 us/squaring   (GPU busy 44% -> 90%)
+            stage 2    201 -> 129 us/mul       P+1 stage 2  238 -> 154 us/mul
+M15000457   stage 1   ~3% faster                stage 2  374 -> 356 us/mul (one run)
+M125000003  stage 1   no change
+```
+
+1.9.8's speed at 1M also depended on what else was running -- one of its rounds
+here came in at 70 us instead of 110, evidently getting shorter sleeps for a
+while. 1.9.9 measured 57.0, 57.3 and 56.7. Results are unaffected: stage-2
+`acc res64` and `results.txt` lines are identical to 1.9.8's for P-1 at
+M1000003 and M15000457 and for P+1 at M1000003. The host thread's CPU use per
+second of stage 1 did not rise materially (about 0.2-0.5 of a core at 1M, where
+the stage also finishes in half the time).
+
+### the FFT search timed a cold GPU
+
+Every candidate compiles its kernels on first use -- seconds of CPU with the GPU
+idle, long enough for its clocks to fall to idle (210-330 MHz, logged every
+100 ms). `Gpu::timePRP` then ran 20 warm-up squarings, a few milliseconds, and
+started the clock, so the timed window began while the clocks were still
+climbing back. At 15M that window is only ~0.45 s, and it measured the ramp:
+
+```
+M15000457, 10 selections each      2:256:4:256:101   1:256:4:256:101   4:256:4:256:101
+1.9.8  (first timed / later timed)   150-156 us/it     198-258           243-298
+1.9.9                                143-145           152-153           202-204
+```
+
+In a fresh process the first candidate happened to be timed while the GPU was
+still boosted, so 1.9.8 often picked right by luck of order. In a long-running
+process -- how AutoPrimeNet runs it -- every candidate could be timed cold, and 3
+of 8 picks were wrong, once choosing a transform ~40% slower in stage 1.
+
+`timePRP` now runs whole blocks of its own measured loop, check updates
+included, until at least `TIME_PRP_WARM_SECONDS` (1 s, twice the observed ramp)
+of GPU work have passed, and only then starts the clock. The Gerbicz-style check
+still covers every iteration. With 1.9.9, 14 of 14 selections at M15000457 (10
+fresh, 4 in a long-running queue) and 3 of 3 at M1000003 picked the fastest
+transform, every timing window at full clock.
+
+The same warm-up applies to `--tune`, which had the same fault. A point tune at
+M15000457 with 1.9.8 recorded `4:256:4:256:202` at 483.8 us/it and left
+`1:256:4:256:202` out of `tune.txt` altogether; 1.9.9 records them at 216.8 and
+152.3, in the right order.
+
+**Limitation that remains.** At a wavefront exponent (M125000003) the two best
+candidates are only ~1.5% apart. 8 of 10 selections picked the faster one; the
+two misses came in consecutive runs during a burst of CPU load from another
+program, when kernel compiles took 9-10 s instead of 5-6 and both readings moved.
+1.9.8 has the same exposure. Closing it would need close contenders re-timed.
+
+### costs and compatibility
+
+- Choosing an FFT takes ~1 s longer per candidate timed: about 10 s at M1000003
+  (was ~7), 18 s at 15M (was ~16), 20-25 s at a wavefront exponent.
+- `--tune` takes a little longer (60 -> 73 s for the point tune above).
+- `fft-verified.txt` tags warm timings `q5w`. The cold `q5` timings of earlier
+  builds keep their verdicts but are re-timed once, instead of being mixed into
+  the same comparison with warm ones. Tested by planting misleading `q5` costs:
+  1.9.9 re-timed all three candidates, picked the right one, and reused its own
+  `q5w` entries on the next run.
+
+Verified: the full `--selftest` passes (all 12 sections), and the offline
+AutoPrimeNet regression -- six jobs, every `results.txt` line and every result
+submission compared byte for byte -- passes 34 of 34.
+
 ## 1.9.8
 
 **The "several factors" console line no longer misstates what came out of the

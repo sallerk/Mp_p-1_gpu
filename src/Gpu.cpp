@@ -2436,6 +2436,19 @@ extern std::atomic<bool> gInterrupted;
 // True when the user has asked to stop, by either mechanism.
 static bool stopWanted() { return Signal::stopRequested() || gInterrupted.load(); }
 
+// How long timePRP keeps the GPU busy, after its kernels are compiled, before it
+// starts the clock.
+//
+// A Gpu compiles each kernel on first use (Kernel::operator()), which is seconds
+// of CPU with the GPU idle -- long enough for its clocks to drop to idle (210-330
+// MHz measured on an RTX 3070) -- and they take about half a second to climb back.
+// Twenty warm-up squarings are a few milliseconds, so the timed window started on
+// a cold GPU. At 15M a 3000-iteration window is only ~0.45 s, and it measured the
+// ramp: candidates read 10-40% slow depending on how long their compile took, and
+// the FFT search ranked them by timing order more than by speed (M15000457: 1: read
+// 198-258 us/it cold against 155-159 warm). One second is twice the observed ramp.
+static const double TIME_PRP_WARM_SECONDS = 1.0;
+
 double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest) to 10 (quickest, shortest)
   u32 blockSize{}, iters{}, warmup{};
 
@@ -2475,9 +2488,11 @@ double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest
   queue->finish();
   if (stopWanted()) { throw "stop requested"; }
 
-  Timer t;
-  queue->setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
-  while (true) {
+  // One block of the measured loop: squarings up to the next block boundary, the
+  // block-end full carry, then -- unless it is the last block -- the check update.
+  // doCheck() only needs a check update at every block boundary but the last, so
+  // any number of these may run before the clock starts.
+  auto block = [&](bool last) {
     while (k % blockSize < blockSize-1) {
       square(bufData, bufData, leadIn, leadOut);
       leadIn = leadOut;
@@ -2486,15 +2501,26 @@ double Gpu::timePRP(int quick) {        // Quick varies from 1 (slowest, longest
     square(bufData, bufData, leadIn, LEAD_NONE);
     leadIn = LEAD_NONE;
     ++k;
-
-    if (k >= iters) { break; }
-
-    modMul(bufCheck, bufData, leadIn);
-    leadIn = LEAD_MIDDLE;
+    if (!last) {
+      modMul(bufCheck, bufData, leadIn);
+      leadIn = LEAD_MIDDLE;
+    }
     if (stopWanted()) { throw "stop requested"; }
-  }
+  };
+
+  // Warm up on the very kernel sequence being timed; finish() after each block so
+  // the wall clock tracks GPU work rather than enqueueing.
+  Timer warm;
+  do {
+    block(false);
+    queue->finish();
+  } while (warm.at() < TIME_PRP_WARM_SECONDS);
+
+  Timer t;
+  queue->setSquareTime(0);     // Busy wait on nVidia to get the most accurate timings while tuning
+  for (u32 n = iters / blockSize; n > 0; --n) { block(n == 1); }
   queue->finish();
-  double secsPerIt = t.reset() / (iters - warmup);
+  double secsPerIt = t.reset() / iters;
 
   if (stopWanted()) { throw "stop requested"; }
 

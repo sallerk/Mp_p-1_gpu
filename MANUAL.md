@@ -445,9 +445,11 @@ and takes the fastest. Shapes that all pass the correctness check have measured
 compared, so neither a slow first candidate nor a run of rejected ones can
 leave a job on an unexamined transform.
 
-The wait scales with the transform, since that is what costs: about 7 seconds
-at the smallest exponent the engine accepts, 15–25 at a wavefront one, and more
-when candidates fail their correctness check and have to be skipped.
+The wait scales with the transform, since that is what costs: about 10 seconds
+at the smallest exponent the engine accepts, about 18 at 15M, 20–25 at a
+wavefront one, and more when candidates fail their correctness check and have to
+be skipped. Most of it is compiling each candidate's kernels; each is then given
+a one-second warm-up before it is timed (see below).
 
 Untuned candidates are ordered by **precision headroom**: smallest transform
 first, and within one size, the cheapest arithmetic whose bits-per-word ceiling
@@ -459,16 +461,24 @@ before any shape gets a second (the `:101` and `:202` of a shape measure within
 0.2% of each other). Entries from `tune.txt` keep their measured order and are
 tried ahead of all of it.
 
-A caveat on precision: GPU clocks vary about 10% run to run, so the search
-cannot reliably separate two shapes closer than roughly 5%. It is built to
-avoid the large mistake, not to split hairs — before this ordering existed it
-could settle on a transform 81% slower than one it had already timed.
+A caveat on precision. Compiling a candidate's kernels leaves the GPU idle long
+enough to drop to idle clocks, so until 1.9.9 each candidate was timed while the
+GPU was still climbing back: readings ran 10–40% high by an amount that
+depended on the candidate's compile time, not its speed, and the order of timing
+could decide the winner. Each candidate now gets a one-second warm-up first, and
+repeated readings agree to about 1% on an otherwise idle machine. Heavy CPU load
+from other programs can still move a reading by 2–3%, so two shapes closer than
+that may swap. The search is built to avoid the large mistake, not to split
+hairs — before its candidate ordering existed it could settle on a transform 81%
+slower than one it had already timed.
 
 Verdicts *and timings* are remembered in `fft-verified.txt`, keyed by exponent,
 GPU and driver, so a repeat run of the same exponent re-picks the same winner
 instantly. Delete that file to search again. Each line records the measurement
 scale it was taken at; costs from a different scale are not comparable, so an
-entry from an older build keeps its verdict but is re-timed. `-fft <spec>` skips selection
+entry from an older build keeps its verdict but is re-timed. (1.9.9 marks its
+warmed-up timings `q5w`; the cold `q5` timings of earlier builds are re-timed
+once.) `-fft <spec>` skips selection
 entirely (the spec is still verified unless `verify_fft = 0`).
 
 ## Reading the output

@@ -45,6 +45,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <timeapi.h>                 // timeBeginPeriod -- see main()
+#pragma comment(lib, "winmm.lib")
 
 #include <io.h>
 
@@ -1291,6 +1293,14 @@ static int runMain(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+  // The host waits on the GPU with std::this_thread::sleep_for (Queue.cpp), and
+  // on Windows 10 2004+ a process that has not asked for a finer timer sleeps in
+  // steps of the default ~15.6 ms tick -- whatever other programs requested.
+  // Measured here: Sleep(1..3) = 15.7 ms. Below ~10M the GPU finishes its queued
+  // work well inside that and idles until the host wakes: M1000003 ran stage 1
+  // at 44% GPU utilization, 112 us/squaring. With this call, 55 us (2.0x), stage 2
+  // 1.58x faster, identical residues; 15M gains ~3%, a wavefront exponent none.
+  timeBeginPeriod(1);
   const int rc = runMain(argc, argv);
 
   // Wrapping runMain() rather than pausing inside it means every exit path is
@@ -1304,5 +1314,6 @@ int main(int argc, char** argv) {
     int c;
     while ((c = getchar()) != '\n' && c != EOF) {}
   }
+  timeEndPeriod(1);
   return rc;
 }

@@ -194,8 +194,8 @@ bias = 2.0
 #  three and takes the fastest. Shapes that all verify have measured 4.9x apart
 #  at one exponent. Untuned candidates are tried smallest-transform-first, and
 #  within a size, cheapest arithmetic that still has the precision for this
-#  exponent. The wait scales with the transform -- about 7s at the smallest
-#  exponent, 15-25s at a wavefront one. Timings land in fft-verified.txt, so a
+#  exponent. The wait scales with the transform -- about 10s at the smallest
+#  exponent, 20-25s at a wavefront one. Timings land in fft-verified.txt, so a
 #  repeat run of the same exponent re-picks the same winner for free -- delete
 #  that file to search again.
 #
